@@ -113,6 +113,17 @@ export function normalize(raw) {
     });
   });
   const projects = arr(raw.projects).filter(p => p && p.id).map(p => ({ id: str(p.id), name: str(p.name || p.id), status: str(p.status), description: str(p.description), activity: list(p.activity) }));
+  // A current checkpoint's owner-input request belongs in Needs you even when
+  // the checkpoint was not selected as a Feed story. Resolved requests vanish.
+  for (const s of arr(raw.sessions)) {
+    if (!s || typeof s.waiting !== 'string' || !s.waiting.trim() || !s.event_id || items.some(i=>i.id===s.event_id)) continue;
+    items.push({id:s.event_id,pid:s.event_id,type:'story',kind:'activity.checkpoint',attentionOnly:true,
+      title:str(s.goal?.title || 'Session needs input'),body:str(s.did),nextAction:s.waiting,
+      producer:str(s.producer),at:str(s.updated_at),topic:'Owner input',claim:'fact',kicker:str(s.title),
+      subject:str(s.work_id),session:str(s.title),sessionId:str(s.session_id),
+      refs:list(s.evidence),evidence:list(s.evidence),stats:[],baseTags:[],actions:[],
+      saved:false,hidden:false,superseded:false,synthetic:false,sensitive:s.visibility==='sensitive'});
+  }
   for (const it of items) { fill(it); if (isSampleAgent(it.producer)) it.synthetic = true; }
   return {
     contract: raw.contract || '', revision: raw.revision || '', eventCount: raw.event_count || 0,
@@ -334,6 +345,7 @@ export function inView(viewId, item, v, opts = {}) {
   if (viewId === 'today') return v.needsYou;
   if (viewId === 'notes') return item.note;
   if (viewId === 'feed' && item.note) return false;
+  if (viewId === 'feed' && item.attentionOnly) return false;
   const def = VIEWS[viewId];
   return !def || !def.types || def.types.includes(item.type);
 }
