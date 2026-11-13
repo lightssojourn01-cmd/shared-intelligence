@@ -26,7 +26,7 @@ jobs:
           node <<'NODE'
           const fs = require('fs'), crypto = require('crypto');
           const report = JSON.parse(fs.readFileSync('PUBLIC-ARTIFACTS.json'));
-          const allowed = ['index.html','app.js','data.js','logic.js','crypto.js','app.css','sw.js','manifest.webmanifest','icon.svg','icon-192.png','icon-512.png','icon-maskable-512.png','apple-touch-icon.png','.nojekyll'];
+          const allowed = ['index.html','app.js','data.js','logic.js','crypto.js','app.css','sw.js','manifest.webmanifest','icon.svg','icon-192.png','icon-512.png','icon-maskable-512.png','apple-touch-icon.png','.nojekyll','.gitattributes'];
           if (report.format !== 'shared-intelligence-public-shell/1' || report.data_included !== false || !Array.isArray(report.files) || report.files.length !== allowed.length || fs.existsSync('_site')) throw new Error('Unreviewed artifact');
           fs.mkdirSync('_site');
           for (const name of allowed) {
