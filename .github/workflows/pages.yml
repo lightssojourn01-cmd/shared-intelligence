@@ -1,0 +1,47 @@
+# Copy into .github/workflows/pages.yml in the PUBLIC SHELL repository.
+# That repository root must contain ONLY audited package-pages output and this workflow.
+name: Deploy reviewed static shell
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse a workspace or data repository
+        run: |
+          test -f PUBLIC-ARTIFACTS.json
+          test ! -d ledger
+          test ! -d shared-intelligence
+          test ! -d .openai
+          node <<'NODE'
+          const fs = require('fs'), crypto = require('crypto');
+          const report = JSON.parse(fs.readFileSync('PUBLIC-ARTIFACTS.json'));
+          const allowed = ['index.html','app.js','data.js','logic.js','crypto.js','app.css','sw.js','manifest.webmanifest','icon.svg','icon-192.png','icon-512.png','icon-maskable-512.png','apple-touch-icon.png','.nojekyll'];
+          if (report.format !== 'shared-intelligence-public-shell/1' || report.data_included !== false || !Array.isArray(report.files) || report.files.length !== allowed.length || fs.existsSync('_site')) throw new Error('Unreviewed artifact');
+          fs.mkdirSync('_site');
+          for (const name of allowed) {
+            const matches = report.files.filter(x => x.path === name);
+            if (matches.length !== 1 || !fs.lstatSync(name).isFile() || fs.lstatSync(name).isSymbolicLink()) throw new Error('Unreviewed file');
+            const bytes = fs.readFileSync(name), digest = crypto.createHash('sha256').update(bytes).digest('hex');
+            if (digest !== matches[0].sha256 || bytes.length !== matches[0].bytes) throw new Error('Artifact changed after review');
+            fs.copyFileSync(name, '_site/' + name);
+          }
+          fs.copyFileSync('PUBLIC-ARTIFACTS.json', '_site/PUBLIC-ARTIFACTS.json');
+          NODE
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,76 @@
+{
+  "format": "shared-intelligence-public-shell/1",
+  "data_included": false,
+  "files": [
+    {
+      "path": "index.html",
+      "bytes": 2322,
+      "sha256": "e2f3f96901916e4ef9482c4c3562b47828930155bcf5b76d6a0215845e5137c7"
+    },
+    {
+      "path": "app.js",
+      "bytes": 76051,
+      "sha256": "617d71bfbcda47009e3b972eff2f67f2449f921ad1a1ab2dfcf77d8ddd36fd14"
+    },
+    {
+      "path": "data.js",
+      "bytes": 13231,
+      "sha256": "34910736b5acc24e70950bae4d2e394ad2cd250fe5eb1c68741c6ba95c4b96aa"
+    },
+    {
+      "path": "logic.js",
+      "bytes": 33334,
+      "sha256": "a9b18035ec023a0540369bf887deed733b8ded3436e816cecb4ffeebc419917d"
+    },
+    {
+      "path": "crypto.js",
+      "bytes": 6664,
+      "sha256": "6604c4a84f73691bb02cfaf9c247fe83623504c0baca9961039c83b9a454d7f3"
+    },
+    {
+      "path": "app.css",
+      "bytes": 23546,
+      "sha256": "5434929dcbf9f9b28b734c43664ab777baa950b0eacecd746a07a6bae08d66e7"
+    },
+    {
+      "path": "sw.js",
+      "bytes": 1241,
+      "sha256": "de374d5c106185dc633940cf85fde69bd2a17df04c9c48e827d619a270dcd50c"
+    },
+    {
+      "path": "manifest.webmanifest",
+      "bytes": 746,
+      "sha256": "35b82fc7bcde8a2f618a10c2a505d770a7eace4d87e0a492fa9418d7e98e9d74"
+    },
+    {
+      "path": "icon.svg",
+      "bytes": 410,
+      "sha256": "a4c6927784b2bd0fece5da5ca7004dd5e27f54acee51bb31d34c10244153dc5d"
+    },
+    {
+      "path": "icon-192.png",
+      "bytes": 2712,
+      "sha256": "19454f868ffb09b7f1d1c49cb11423672aaa9e87edc0efad021b6f6e0b47d11e"
+    },
+    {
+      "path": "icon-512.png",
+      "bytes": 8400,
+      "sha256": "5fdb89a3924fba3b5cf125050b309942ca1339314a720ea33683ad63d9c4c61b"
+    },
+    {
+      "path": "icon-maskable-512.png",
+      "bytes": 6112,
+      "sha256": "aef202d20079ebc663dfbc88c0b9eb9a5f11bdfba804fdc2a343bfca372f9593"
+    },
+    {
+      "path": "apple-touch-icon.png",
+      "bytes": 2219,
+      "sha256": "375991a3f100dad2dd2e2d04d4a1440dd21cd5599b21aba65ae7f616df65be99"
+    },
+    {
+      "path": ".nojekyll",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}
