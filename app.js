@@ -9,8 +9,8 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const PAGE = 100;
 const APP_NAME = 'Shared Intelligence'; // Rename the build here.
-const NAV = [['home', 'Overview'], ['today', 'Needs you'], ['feed', 'Feed'], ['notes', 'Notes'], ['board', 'Board'], ['goals', 'Goals'], ['ideas', 'Ideas'], ['messages', 'Messages'], null,
-  ['saved', 'Saved'], ['snoozed', 'Snoozed'], ['hidden', 'Hidden'], ['history', 'History'], null, ['agents', 'Agents'], ['projects', 'Projects'], ['settings', 'Settings']];
+const NAV = [['home', 'Overview'], ['today', 'Needs you'], ['feed', 'Feed'], ['activity', 'Activity'], ['notes', 'Notes'], ['board', 'Board'], ['goals', 'Goals'], ['ideas', 'Ideas'], ['messages', 'Messages'], null,
+  ['saved', 'Saved'], ['snoozed', 'Snoozed'], ['hidden', 'Hidden'], ['history', 'History'], null, ['agents', 'Agents'], ['projects', 'Projects'], ['resources', 'Resources'], ['settings', 'Settings']];
 const TITLES = Object.fromEntries(NAV.filter(Boolean));
 const isList = v => !!L.VIEWS[v];
 const noFilters = () => ({ q: '', producer: '', topic: '', tag: '', claim: '', status: '', unread: false, sort: 'new' });
@@ -567,6 +567,27 @@ function homeHTML() {
   </div>`;
 }
 
+function resourcesHTML() {
+  const resources=S.model.resources || [], preferences=S.model.preferences || [];
+  return '<h2>Standing preferences</h2><ul>' + preferences.map(p=>`<li>${esc(p.text)} <span class="small">${esc(p.authority || 'reported')}</span></li>`).join('') + '</ul><h2>Native sources and workflows</h2>' +
+    (resources.map(r=>`<section class="card continuity-card" style="padding:16px;margin-bottom:12px"><h3>${esc(r.title)}</h3><p>${esc(r.purpose)}</p><p>${esc(r.uri)}</p><p class="small">${esc(r.status)} · ${esc(r.checked_at || 'Not checked')} · ${esc(r.detail || '')}</p></section>`).join('') || '<p>No resources registered yet.</p>');
+}
+
+function activityHTML() {
+  const sessions = [...(S.model.sessions || [])].sort((a,b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  if (!sessions.length) return '<div class="empty"><b>No activity checkpoints yet</b><p>Meaningful results, decisions and handoffs will appear here. Routine tool calls stay in local session history.</p></div>';
+  return '<p class="small">Session → Goal → Mission. Agent reports and evidence preserve handoff context. A finished reply does not mean a finished goal.</p>' + sessions.map(s => `<section class="card continuity-card" style="margin-bottom:16px;padding:16px">
+    <h2>${esc(s.title || s.id)}</h2><p class="small">${esc(s.project)} · ${esc(s.vendor)} · ${esc(stamp(s.updated_at))}</p>
+    <h3>Goal: ${esc(s.goal.title)} <span class="small">${esc(s.goal.state)}</span></h3>
+    <h3>Mission: ${esc(s.mission.title)} <span class="small">${esc(s.mission.state)}</span></h3>
+    <p>${esc(s.did)}</p><p><b>Next:</b> ${esc(s.next || 'No next action recorded.')}</p>
+    ${s.waiting ? `<p class="callout"><b>Waiting:</b> ${esc(s.waiting)}</p>` : ''}
+    <details><summary>Handoff and checkpoint history</summary><p><b>Verification reported:</b> ${esc(s.verification || 'No verification reported.')}</p>
+    <p class="small">Session: ${esc(s.id)} · Work: ${esc(s.work_id || 'unspecified')}</p>
+    <ul>${(s.evidence || []).map(e => `<li>${esc(e.uri)}</li>`).join('')}</ul>
+    <ol>${[...(s.checkpoints || [])].reverse().map(c => `<li><b>${esc(c.mission.title)} · ${esc(c.reason)}</b><p>${esc(c.did)}</p><span class="small">${esc(stamp(c.at))} · ${esc(c.claim)}</span></li>`).join('')}</ol></details></section>`).join('');
+}
+
 // ---------- other views ----------
 
 function agentsHTML() {
@@ -665,6 +686,8 @@ function render() {
   const main = $('main');
   if (!S.model) main.innerHTML = S.loading ? '<div class="empty"><b>Loading…</b></div>' : setupHTML();
   else if (S.view === 'home') main.innerHTML = homeHTML();
+  else if (S.view === 'resources') main.innerHTML = resourcesHTML();
+  else if (S.view === 'activity') main.innerHTML = activityHTML();
   else if (S.view === 'board') main.innerHTML = boardHTML();
   else if (S.view === 'agents') main.innerHTML = agentsHTML();
   else if (S.view === 'projects') main.innerHTML = projectsHTML();

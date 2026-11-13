@@ -117,6 +117,8 @@ export function normalize(raw) {
   return {
     contract: raw.contract || '', revision: raw.revision || '', eventCount: raw.event_count || 0,
     newestRecordAt: raw.newest_record_at || (raw.activity && raw.activity[0] && raw.activity[0].occurred_at) || null,
+    resources: arr(raw.resources), preferences: arr(raw.preferences),
+    sessions: arr(raw.sessions).filter(s => s && s.id && s.goal && s.mission),
     items, threads, projects, agents, receipts, prefs: { ...(raw.prefs || {}) }, skipped,
     sources: arr(raw.sources), activityIds: new Set((raw.activity || []).map(a => a.event_id)),
   };

@@ -300,3 +300,8 @@ html { overflow-x: clip; }
 .modal input[type=password] { width: 100%; }
 .notes-head .acts { justify-content: flex-end; }
 @media (max-width:740px) { .notes-head { flex-wrap: wrap; } .notes-head .acts { justify-content: flex-start; } }
+
+/* Session identifiers and evidence paths remain readable on phones. */
+.continuity-card { min-width: 0; overflow-wrap: anywhere; }
+.continuity-card details { margin-top: 12px; }
+.continuity-card summary { cursor: pointer; }
