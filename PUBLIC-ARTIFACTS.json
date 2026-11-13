@@ -19,8 +19,8 @@
     },
     {
       "path": "logic.js",
-      "bytes": 34941,
-      "sha256": "692357bd83f3c06d2a9b33f89ac5eae2922ee9588fa7b6d7e05cdeb1647a8f31"
+      "bytes": 34955,
+      "sha256": "9d5393f2da8486c41504da6f47744af83d9a9e241ab39234834fa09924f46e85"
     },
     {
       "path": "crypto.js",

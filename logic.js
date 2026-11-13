@@ -83,7 +83,7 @@ export function normalize(raw) {
       currentState: g.current_state || '', desiredOutcome: rf.desiredOutcome || '', lifecycle: g.lifecycle || 'active',
       progress: list(g.progress).map(p => ({ title: p.title, at: p.effective_at, by: p.producer })),
       nativeSync: g.native_sync || {}, stats: [], refs: [], evidence: [], subject: g.id,
-      superseded: false, synthetic: !!g.synthetic, sensitive: g.visibility === 'sensitive', saved: false, hidden: false,
+      superseded: !!g.reclassified_as, synthetic: !!g.synthetic, sensitive: g.visibility === 'sensitive', saved: false, hidden: false,
     });
   });
   each(arr(raw.ideas), i => {
