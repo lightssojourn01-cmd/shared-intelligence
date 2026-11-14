@@ -34,6 +34,7 @@ export function normalizeWork(raw) {
     evidence:list(w.evidence).filter(e=>e && typeof e.uri==='string'),
     sessions:list(w.sessions).filter(s=>s && typeof s.vendor==='string' && typeof s.session_id==='string'),
     verification:{state:['unverified','reported','verified'].includes(w.verification?.state)?w.verification.state:'unverified',detail:workText(w.verification?.detail),by:workText(w.verification?.by)},
+    acceptance:{state:['unreviewed','partial','accepted','not_accepted'].includes(w.acceptance?.state)?w.acceptance.state:'unreviewed',scope:workText(w.acceptance?.scope),detail:workText(w.acceptance?.detail),by:workText(w.acceptance?.by),reviewed_revision:workText(w.acceptance?.reviewed_revision),evidence:list(w.acceptance?.evidence).filter(e=>e&&typeof e.uri==='string')},
     updated_at:workText(w.updated_at),producer:workText(w.producer),visibility:workText(w.visibility),synthetic:!!w.synthetic,
     history:list(w.history).filter(h=>h && typeof h==='object').map(h=>({...h,event_id:workText(h.event_id),summary:workText(h.summary),correction:workText(h.correction),kind:workText(h.kind),at:workText(h.at),occurred_at:workText(h.occurred_at),producer:workText(h.producer)})),
     conflicts:list(w.conflicts).filter(c=>c && typeof c==='object').map(c=>({...c,event_id:workText(c.event_id),resolved_by:workText(c.resolved_by)})),resolved_conflicts:list(w.resolved_conflicts).filter(v=>typeof v==='string'),
@@ -54,8 +55,10 @@ export function workReview(model, opts={}) {
   const unresolved=w=>w.dependencies.filter(d=>d.state!=='resolved');
   const verified=w=>w.verification.state==='verified' && !!w.verification.detail && !!w.verification.by && w.evidence.length>0;
   const ownerAttention=active.filter(w=>w.waiting_on==='owner' || unresolved(w).some(d=>isOwner(d.owner)));
-  return {all,active,ownerAttention,waiting:active.filter(w=>['waiting','blocked','paused'].includes(w.status)||unresolved(w).length),
+  return {all,active,ownerAttention,uncertainActions:all.filter(w=>(model.workActions||[]).some(a=>a.work_id===w.id&&a.state==='uncertain')),waiting:active.filter(w=>['waiting','blocked','paused'].includes(w.status)||unresolved(w).length),
     unassigned:active.filter(w=>!w.responsible),needsVerification:all.filter(w=>w.status==='completed' && !verified(w)),
+    needsAcceptance:all.filter(w=>w.status==='completed'&&w.acceptance.state!=='accepted'),
+    accepted:all.filter(w=>w.acceptance.state==='accepted'),
     verified:all.filter(verified),completed:all.filter(w=>w.status==='completed'),completionDependencies:all.filter(w=>w.status==='completed' && unresolved(w).length),
     conflicts:all.filter(w=>w.conflicts.some(c=>!c.resolved_by)),recent:all.slice(0,6)};
 }
@@ -183,7 +186,7 @@ export function normalize(raw) {
   return {
     contract: raw.contract || '', revision: raw.revision || '', eventCount: raw.event_count || 0,
     newestRecordAt: raw.newest_record_at || (raw.activity && raw.activity[0] && raw.activity[0].occurred_at) || null,
-    work, resources: arr(raw.resources), preferences: arr(raw.preferences),
+    work, workActions:arr(raw.work_actions), resources: arr(raw.resources), preferences: arr(raw.preferences),
     sessions: arr(raw.sessions).filter(s => s && s.id && s.goal && s.mission),
     items, threads, projects, agents, receipts, prefs: { ...(raw.prefs || {}) }, skipped,
     sources: arr(raw.sources), activityIds: new Set((raw.activity || []).map(a => a.event_id)),
@@ -227,7 +230,7 @@ export const records = {
     const id=newId(now), subject=prev?.id || 'work:'+id;
     const payload={base_revision:prev?.revision || null,title:prev?.title || '',request:prev?.request || '',project:prev?.project || '',
       status:prev?.status || 'queued',stage:prev?.stage || '',responsible:prev?.responsible || '',next_action:prev?.next_action || '',waiting:prev?.waiting || '',waiting_on:prev?.waiting_on || '',
-      dependencies:prev?.dependencies || [],evidence:prev?.evidence || [],sessions:prev?.sessions || [],verification:prev?.verification || {state:'unverified',detail:'',by:''},resolved_conflicts:prev?.resolved_conflicts || [],correction:'',...changes};
+      dependencies:prev?.dependencies || [],evidence:prev?.evidence || [],sessions:prev?.sessions || [],verification:prev?.verification || {state:'unverified',detail:'',by:''},acceptance:prev?.acceptance?.state==='accepted'?{state:'unreviewed',detail:'Work edited after consumer acceptance; review the current revision.'}:(prev?.acceptance || {state:'unreviewed'}),resolved_conflicts:prev?.resolved_conflicts || [],correction:'',...changes};
     return {event_id:id,kind:'work.upserted',subject_id:subject,occurred_at:iso(now),summary:clip(payload.title,480),...(prev?.visibility==='sensitive'?{visibility:'sensitive'}:{}),payload};
   },
   pref(item, fields, now = Date.now()) {
