@@ -20,6 +20,54 @@ const fill = it => {
 };
 
 const arr = o => (Array.isArray(o) ? o : Object.values(o || {}));
+export const WORK_STATUS = { queued: 'Queued', running: 'In progress', waiting: 'Waiting', blocked: 'Blocked', paused: 'Paused', completed: 'Completed as reported', cancelled: 'Cancelled' };
+export const WORK_VERIFICATION = { unverified: 'Not verified', reported: 'Verification reported', verified: 'Verification recorded' };
+const terminalWork = w => ['completed', 'cancelled'].includes(w.status);
+const workText = v => typeof v==='string'?v:'';
+/** Work snapshots retain their native revision and evidence rather than inferring progress from activity. */
+export function normalizeWork(raw) {
+  return arr(raw).filter(w => w && typeof w === 'object' && typeof w.id === 'string' && w.id.startsWith('work:')).map(w => ({
+    id:w.id, revision:workText(w.revision), title:workText(w.title) || w.id, request:workText(w.request), project:workText(w.project),
+    status:typeof w.status==='string' && Object.hasOwn(WORK_STATUS,w.status)?w.status:'queued', stage:workText(w.stage), responsible:workText(w.responsible),
+    next_action:workText(w.next_action), waiting:workText(w.waiting), waiting_on:['owner','external','agent'].includes(w.waiting_on)?w.waiting_on:'',
+    dependencies:list(w.dependencies).filter(d=>d && typeof d==='object').map(d=>({...d,id:workText(d.id),title:workText(d.title) || workText(d.id),state:d.state==='resolved'?'resolved':'open',owner:workText(d.owner)})),
+    evidence:list(w.evidence).filter(e=>e && typeof e.uri==='string'),
+    sessions:list(w.sessions).filter(s=>s && typeof s.vendor==='string' && typeof s.session_id==='string'),
+    verification:{state:['unverified','reported','verified'].includes(w.verification?.state)?w.verification.state:'unverified',detail:workText(w.verification?.detail),by:workText(w.verification?.by)},
+    updated_at:workText(w.updated_at),producer:workText(w.producer),visibility:workText(w.visibility),synthetic:!!w.synthetic,
+    history:list(w.history).filter(h=>h && typeof h==='object').map(h=>({...h,event_id:workText(h.event_id),summary:workText(h.summary),correction:workText(h.correction),kind:workText(h.kind),at:workText(h.at),occurred_at:workText(h.occurred_at),producer:workText(h.producer)})),
+    conflicts:list(w.conflicts).filter(c=>c && typeof c==='object').map(c=>({...c,event_id:workText(c.event_id),resolved_by:workText(c.resolved_by)})),resolved_conflicts:list(w.resolved_conflicts).filter(v=>typeof v==='string'),
+  }));
+}
+export const workConflict = (p, model) => {
+  if(p.record.kind!=='work.upserted')return false;
+  const current=model.work?.find(w=>w.id===p.record.subject_id);if(!current)return false;
+  if(current.revision===p.record.event_id || current.history.some(h=>h.event_id===p.record.event_id) || current.resolved_conflicts.includes(p.record.event_id))return false;
+  return current.conflicts.find(c=>c.event_id===p.record.event_id && !c.resolved_by) ||
+    (['sent','unsent','refused','conflict'].includes(p.state) && p.record.payload.base_revision!==current.revision ? {event_id:p.record.event_id,reason:'stale_revision'} : false);
+};
+export function workRows(model, opts={}) {
+  return (model.work || []).filter(w=>opts.samples || !w.synthetic).sort((a,b)=>ts(b.updated_at)-ts(a.updated_at)||a.id.localeCompare(b.id));
+}
+export function workReview(model, opts={}) {
+  const all=workRows(model,opts), active=all.filter(w=>!terminalWork(w));
+  const unresolved=w=>w.dependencies.filter(d=>d.state!=='resolved');
+  const verified=w=>w.verification.state==='verified' && !!w.verification.detail && !!w.verification.by && w.evidence.length>0;
+  const ownerAttention=active.filter(w=>w.waiting_on==='owner' || unresolved(w).some(d=>isOwner(d.owner)));
+  return {all,active,ownerAttention,waiting:active.filter(w=>['waiting','blocked','paused'].includes(w.status)||unresolved(w).length),
+    unassigned:active.filter(w=>!w.responsible),needsVerification:all.filter(w=>w.status==='completed' && !verified(w)),
+    verified:all.filter(verified),completed:all.filter(w=>w.status==='completed'),completionDependencies:all.filter(w=>w.status==='completed' && unresolved(w).length),
+    conflicts:all.filter(w=>w.conflicts.some(c=>!c.resolved_by)),recent:all.slice(0,6)};
+}
+/** A session may have moved on to another job; retain the checkpoints for this work. */
+export function workSessions(work, sessions=[]) {
+  const refs=new Map(work.sessions.map(s=>[s.vendor+':'+s.session_id,{...s,id:s.vendor+':'+s.session_id,checkpoints:[]}]));
+  for(const s of sessions) {
+    const checkpoints=list(s.checkpoints).filter(c=>c.work_id===work.id);
+    if(s.work_id===work.id || checkpoints.length || refs.has(s.id)) refs.set(s.id,{...s,checkpoints});
+  }
+  return [...refs.values()].sort((a,b)=>ts(b.updated_at)-ts(a.updated_at));
+}
 export const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'x';
 // "docs" → "Docs", "ui" → "UI"; anything the writer capitalised is kept as written
 const cap = s => (!s || s !== s.toLowerCase() ? s : s.length <= 3 ? s.toUpperCase() : s[0].toUpperCase() + s.slice(1));
@@ -113,10 +161,17 @@ export function normalize(raw) {
     });
   });
   const projects = arr(raw.projects).filter(p => p && p.id).map(p => ({ id: str(p.id), name: str(p.name || p.id), status: str(p.status), description: str(p.description), activity: list(p.activity) }));
+  const work=normalizeWork(raw.work);
+  for(const w of workReview({work}).ownerAttention) items.push({
+    id:w.id,pid:w.id,type:'story',kind:'work.upserted',attentionOnly:true,workId:w.id,
+    title:w.title,body:w.request,nextAction:w.waiting || w.dependencies.filter(d=>d.state!=='resolved' && isOwner(d.owner)).map(d=>d.title).join('; ') || 'Owner input requested; detail not recorded.',
+    producer:w.producer,at:w.updated_at,topic:'Work needs you',claim:'fact',kicker:w.project || 'Work',subject:w.id,
+    refs:w.evidence,evidence:w.evidence,stats:[],baseTags:[],actions:[],saved:false,hidden:false,superseded:false,synthetic:w.synthetic,sensitive:w.visibility==='sensitive',
+  });
   // A current checkpoint's owner-input request belongs in Needs you even when
   // the checkpoint was not selected as a Feed story. Resolved requests vanish.
   for (const s of arr(raw.sessions)) {
-    if (!s || typeof s.waiting !== 'string' || !s.waiting.trim() || !s.event_id || items.some(i=>i.id===s.event_id)) continue;
+    if (!s || typeof s.waiting !== 'string' || !s.waiting.trim() || !s.event_id || items.some(i=>i.id===s.event_id) || work.some(w=>w.id===s.work_id)) continue;
     items.push({id:s.event_id,pid:s.event_id,type:'story',kind:'activity.checkpoint',attentionOnly:true,
       title:str(s.goal?.title || 'Session needs input'),body:str(s.did),nextAction:s.waiting,
       producer:str(s.producer),at:str(s.updated_at),topic:'Owner input',claim:'fact',kicker:str(s.title),
@@ -128,7 +183,7 @@ export function normalize(raw) {
   return {
     contract: raw.contract || '', revision: raw.revision || '', eventCount: raw.event_count || 0,
     newestRecordAt: raw.newest_record_at || (raw.activity && raw.activity[0] && raw.activity[0].occurred_at) || null,
-    resources: arr(raw.resources), preferences: arr(raw.preferences),
+    work, resources: arr(raw.resources), preferences: arr(raw.preferences),
     sessions: arr(raw.sessions).filter(s => s && s.id && s.goal && s.mission),
     items, threads, projects, agents, receipts, prefs: { ...(raw.prefs || {}) }, skipped,
     sources: arr(raw.sources), activityIds: new Set((raw.activity || []).map(a => a.event_id)),
@@ -168,6 +223,13 @@ const iso = now => new Date(now).toISOString();
 const clip = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length <= n ? t : t.slice(0, n - 1) + '…'; };
 
 export const records = {
+  work({prev,changes}, now=Date.now()) {
+    const id=newId(now), subject=prev?.id || 'work:'+id;
+    const payload={base_revision:prev?.revision || null,title:prev?.title || '',request:prev?.request || '',project:prev?.project || '',
+      status:prev?.status || 'queued',stage:prev?.stage || '',responsible:prev?.responsible || '',next_action:prev?.next_action || '',waiting:prev?.waiting || '',waiting_on:prev?.waiting_on || '',
+      dependencies:prev?.dependencies || [],evidence:prev?.evidence || [],sessions:prev?.sessions || [],verification:prev?.verification || {state:'unverified',detail:'',by:''},resolved_conflicts:prev?.resolved_conflicts || [],correction:'',...changes};
+    return {event_id:id,kind:'work.upserted',subject_id:subject,occurred_at:iso(now),summary:clip(payload.title,480),...(prev?.visibility==='sensitive'?{visibility:'sensitive'}:{}),payload};
+  },
   pref(item, fields, now = Date.now()) {
     if (item.encrypted && Object.hasOwn(fields, 'tags')) throw Object.assign(new Error('Encrypted-note tags must be changed inside the encrypted editor.'), { code: 'ENCRYPTED_METADATA' });
     const id = item.pid || item.id;
@@ -262,6 +324,11 @@ export function applyPending(model, pending) {
 /** Is this queued write already in the ledger? Judged by its effect, not only by the recent-activity list. */
 export function isFiled(p, model) {
   const r = p.record, pl = r.payload || {};
+  if(r.kind==='work.upserted') {
+    if(workConflict(p,model)) return false;
+    const w=model.work?.find(w=>w.id===r.subject_id);
+    return !!w && (w.revision===r.event_id || w.history.some(h=>h.event_id===r.event_id) || w.conflicts.some(c=>c.event_id===r.event_id && c.resolved_by));
+  }
   if (model.activityIds.has(r.event_id)) return true;
   if (r.kind === 'owner.pref') {
     const cur = model.prefs[pl.target_id];
@@ -283,6 +350,7 @@ export const settled = (pending, model) => pending.filter(p => isFiled(p, model)
  * GitHub (or null when not checked); `syncedAt` = last PC sync.
  */
 export function pendingStatus(p, { drops = null, syncedAt = null, now = Date.now() } = {}) {
+  if(p.workConflict) return {key:'conflict',label:p.workUnfiled?'Work changed: review your saved edit':'Filed but not applied: review the newer work revision',level:'bad'};
   const id = p.record.event_id, key = p.file || id, within = coll => [...(coll || [])].some(n => String(n).includes(key) || String(n).includes(id));
   if (p.state === 'refused') return { key: 'rejected', label: 'Not accepted', level: 'bad' };
   if (p.state === 'sending') return { key: 'sending', label: 'Sending…', level: 'wait' };

@@ -9,7 +9,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const PAGE = 100;
 const APP_NAME = 'Shared Intelligence'; // Rename the build here.
-const NAV = [['home', 'Overview'], ['today', 'Needs you'], ['feed', 'Feed'], ['activity', 'Activity'], ['notes', 'Notes'], ['board', 'Board'], ['goals', 'Goals'], ['ideas', 'Ideas'], ['messages', 'Messages'], null,
+const NAV = [['home', 'Overview'], ['work', 'Work'], ['today', 'Needs you'], ['reports', 'Review'], ['feed', 'Feed'], ['activity', 'Activity'], ['notes', 'Notes'], ['board', 'Board'], ['goals', 'Goals'], ['ideas', 'Ideas'], ['messages', 'Messages'], null,
   ['saved', 'Saved'], ['snoozed', 'Snoozed'], ['hidden', 'Hidden'], ['history', 'History'], null, ['agents', 'Agents'], ['projects', 'Projects'], ['resources', 'Resources'], ['settings', 'Settings']];
 const TITLES = Object.fromEntries(NAV.filter(Boolean));
 const isList = v => !!L.VIEWS[v];
@@ -21,7 +21,7 @@ const S = {
   base: null, model: null, info: null, error: null, loading: true, usingCache: false,
   pending: store.get('si.pending', []).map(p => p.state === 'sending' ? { ...p, state: 'unsent' } : p), drops: null, stopWatch: null, undo: null,
 };
-Object.assign(S, { inFlight: 0, reloadLater: false, layout: store.get('si.notesLayout', 'gallery'), editing: null, menu: null, mobileItem: null, decrypted: new Map(), unlock: null, storageError: false, cryptoEpoch: 0, secretDrafts: new Set(), loadGeneration: 0 });
+Object.assign(S, { inFlight: 0, reloadLater: false, layout: store.get('si.notesLayout', 'gallery'), editing: null, menu: null, mobileItem: null, decrypted: new Map(), unlock: null, storageError: false, cryptoEpoch: 0, secretDrafts: new Set(), loadGeneration: 0, workId:'', workEditing:null, workOriginal:null, workPendingId:null, workSaving:false });
 let now = Date.now();
 
 // ---------- data flow ----------
@@ -67,6 +67,11 @@ async function reload({ quiet = false } = {}) {
     const res = await doors.load();
     if (!current()) return;
     S.base = L.normalize(res.raw); S.info = res; S.error = null; S.usingCache = false;
+    for(const p of S.pending) {
+      const conflict=L.workConflict(p,S.base);
+      if(conflict) {p.workConflict=true;p.workUnfiled=conflict.reason==='stale_revision';p.state='conflict';}
+      else if(p.workConflict && p.record.kind==='work.upserted') {delete p.workConflict;p.state='sent';}
+    }
     const text = JSON.stringify(res.raw);
     if (text.length < 3e6 && !text.includes('"visibility":"sensitive"')) store.set('si.cache', { raw: res.raw, syncedAt: res.syncedAt, door: res.door, scope, at: new Date().toISOString() });
     else store.del('si.cache');                       // too large to keep on this device: better none than an old one
@@ -178,7 +183,8 @@ function md(src) {
 export function refLabel(r) {
   const raw = String(r?.uri || r?.url || '');
   let u = null; try { u = new URL(raw); } catch {}
-  if (u && u.protocol === 'file:') return { label: 'Local session transcript' };
+  if (u && u.protocol === 'file:') return { label: /\/sessions\/.*\.jsonl$|\/\.claude\/projects\/.*\.jsonl$/i.test(u.pathname)
+    ? 'Local session transcript' : decodeURIComponent(u.pathname).replace(/^\/(?=[A-Za-z]:)/,'') };
   if (u && u.protocol === 'https:') {
     const host = u.hostname.replace(/^www\./, '');
     return { label: /(^|\.)outlook\.(live|office)\.com$/i.test(u.hostname) ? 'Outlook message' : host, url: u.href };
@@ -212,6 +218,7 @@ function renderHeader() {
 
 function renderNav() {
   const c = S.model ? L.counts(S.model, { samples: S.samples }, now) : {};
+  if(S.model) c.work=L.workReview(S.model,{samples:S.samples}).active.length;
   $('nav').innerHTML = NAV.map(n => (n ? `<button type="button" class="nav-item" id="nav-${n[0]}" data-a="view" data-id="${n[0]}" aria-current="${S.view === n[0] ? 'page' : 'false'}"><span>${esc(n[1])}</span>${(n[0] === 'settings' ? S.pending.length : c[n[0]]) ? `<span class="n">${n[0] === 'settings' ? S.pending.length : c[n[0]]}</span>` : ''}</button>` : '<span class="nav-sep" aria-hidden="true"></span>')).join('');
   $('nav').querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
@@ -491,8 +498,8 @@ function renderMobile() {
 }
 function renderOverlay() {
   const x = S.menu;
-  $('overlay').hidden = !x && !S.editing && !S.unlock;
-  $('overlay').innerHTML = S.unlock ? unlockHTML() : S.editing ? noteEditorHTML() : !x ? '' : x.type === 'reply'
+  $('overlay').hidden = !x && !S.editing && !S.unlock && !S.workEditing;
+  $('overlay').innerHTML = S.workEditing ? workEditorHTML() : S.unlock ? unlockHTML() : S.editing ? noteEditorHTML() : !x ? '' : x.type === 'reply'
     ? `<section class="modal" role="dialog" aria-modal="true" aria-label="Review reply"><h2>Send to ${esc(agentName(x.to))}?</h2><p class="small">This exact text will be recorded as your reply.</p><pre class="reply-preview">${esc(x.body)}</pre><div class="acts">${btn('confirm-reply','x','Confirm and send',{cls:'primary'})}${btn('cancel-menu','x','Cancel')}</div></section>`
     : x.type === 'actions' ? `<section class="modal" role="dialog" aria-modal="true" aria-label="Item actions"><h2>${esc(itemById(x.id)?.title)}</h2><div class="acts">${['pin','done','snooze','hide'].filter(a => a !== 'hide' || itemById(x.id)?.type === 'story').map(a => btn('menu-'+a,x.id,{pin:'Toggle pin',done:'Toggle done',snooze:'Toggle snooze',hide:'Remove / restore'}[a])).join('')}${btn('cancel-menu','x','Cancel')}</div></section>`
     : `<section class="modal" role="dialog" aria-modal="true" aria-label="More views"><h2>More</h2><div class="more-views">${NAV.filter(n => n && !['home','today','feed','notes'].includes(n[0])).map(([id,label]) => btn('view',id,label)).join('')}</div>${btn('cancel-menu','x','Close')}</section>`;
@@ -547,7 +554,7 @@ function homeHTML() {
   const card = (title, body, more) => `<section class="card"><div class="card-top"><h2>${title}</h2>${more || ''}</div>${body}</section>`;
   const go = (view, label) => `<button type="button" class="btn link" id="more-${view}" data-a="view" data-id="${view}">${label}</button>`;
   const bad = S.pending.map(pStatus).filter(s => s.level === 'bad').length;
-  return `${composeHTML()}<div class="home">
+  return `${workHubHTML()}${composeHTML()}<div class="home">
     ${o.brief ? `<section class="card brief"><div class="card-top"><h2>${esc(o.brief.item.title)}</h2><span class="small">${esc(agentName(o.brief.item.producer))} · ${esc(stamp(o.brief.item.at))}</span></div><div class="prose">${md(o.brief.item.body)}</div>${(o.brief.item.actions || []).length ? `<div class="acts">${(o.brief.item.actions || []).map((a, n) => btn('agent-action', `${o.brief.item.id}|${n}`, esc(a.label))).join('')}</div>` : ''}</section>` : ''}
     ${card(`Needs you <span class="count ${o.needs.count ? 'hot' : ''}">${o.needs.count}</span>`, o.needs.count ? `<ul class="links">${o.needs.top.map(link).join('')}</ul>` : '<p class="muted">Nothing is waiting on you.</p>', o.needs.count > o.needs.top.length ? go('today', `All ${o.needs.count}`) : '')}
     ${card('Status', `<dl class="facts">
@@ -565,6 +572,96 @@ function homeHTML() {
     ${o.sessions.length ? card('Recent work sessions', `<ul class="agents">${o.sessions.map(s => `<li><span class="t">${esc(s.name)}</span><span class="small">${esc(agentName(s.agent))} · ${s.stories} ${s.stories === 1 ? 'story' : 'stories'} · ${esc(L.ago(s.last, now))} ago</span></li>`).join('')}</ul>`) : ''}
     ${o.failed.length ? card('Could not be delivered', `<ul class="links">${o.failed.map(link).join('')}</ul>`) : ''}
   </div>`;
+}
+
+function workLink(w) {
+  return `<button type="button" class="work-link" data-a="open-work" data-id="${esc(w.id)}"><span>${esc(w.title)}</span><span class="small">${esc(L.WORK_STATUS[w.status])} · ${esc(w.stage || 'Stage not recorded')}</span></button>`;
+}
+function workHubHTML() {
+  const r=L.workReview(S.model,{samples:S.samples});
+  return `<section class="work-hub" aria-label="Current work"><div class="work-heading"><div><h2>Work that carries forward</h2><p class="small">Requests, next actions and evidence stay together across sessions.</p></div><div class="acts">${btn('work-new','x','New work',{cls:'primary'})}${btn('view','work','All work')}${btn('view','reports','Review')}</div></div>
+    <dl class="work-metrics"><div><dt>Open requests</dt><dd>${r.active.length}</dd></div><div><dt>Waiting or blocked</dt><dd>${r.waiting.length}</dd></div><div><dt>Needs you</dt><dd>${r.ownerAttention.length}</dd></div><div><dt>Completion needs verification</dt><dd>${r.needsVerification.length}</dd></div></dl>
+    ${r.active.length ? `<ul class="work-brief">${r.active.slice(0,4).map(w=>`<li>${workLink(w)}<p><b>Next:</b> ${esc(w.next_action || 'Next action not recorded.')}</p><p class="small">Responsible: ${esc(w.responsible || 'Unassigned')} · Last reported ${esc(stamp(w.updated_at))}</p></li>`).join('')}</ul>` : '<p class="muted">No open work is recorded. Start with a request you want carried into the next session.</p>'}</section>`;
+}
+function workEvidenceHTML(evidence) {
+  return evidence.length ? `<ul class="work-evidence">${evidence.map(e=>{const r=refLabel(e);return `<li>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.label)}</a>` : esc(r.label)}</li>`;}).join('')}</ul>` : '<p class="small">No evidence references recorded.</p>';
+}
+function workCardHTML(w) {
+  const unresolved=w.dependencies.filter(d=>d.state!=='resolved'), conflicts=w.conflicts.filter(c=>!c.resolved_by);
+  return `<section class="card work-card"><div class="card-top">${workLink(w)}<span class="chip ${['waiting','blocked'].includes(w.status)?'warn':''}">${esc(L.WORK_STATUS[w.status])}</span></div>
+    <p>${esc(w.request)}</p><dl class="work-facts"><dt>Responsible</dt><dd>${esc(w.responsible || 'Unassigned')}</dd><dt>Next</dt><dd>${esc(w.next_action || 'Not recorded')}</dd><dt>Verification</dt><dd>${esc(L.WORK_VERIFICATION[w.verification.state])}</dd></dl>
+    ${w.waiting ? `<p class="callout"><b>Waiting${w.waiting_on ? ' on '+esc(w.waiting_on) : ''}:</b> ${esc(w.waiting)}</p>` : ''}
+    <p class="small">${unresolved.length} open ${unresolved.length===1?'dependency':'dependencies'} · ${conflicts.length} unresolved ${conflicts.length===1?'conflict':'conflicts'} · Last reported ${esc(stamp(w.updated_at))}</p></section>`;
+}
+function workQueueHTML(id=null) {
+  const pending=S.pending.filter(p=>p.record.kind==='work.upserted' && (!id || p.record.subject_id===id));
+  if(!pending.length) return '';
+  return `<section class="callout work-card"><h3>Work changes on this device</h3><ul class="work-review-list">${pending.map(p=>`<li><b>${esc(p.record.payload.title || p.record.subject_id)}</b><p>${esc(pStatus(p).label)}</p>${p.workConflict?btn('work-review-conflict',p.record.event_id,'Review my change'):btn('open-work',p.record.subject_id,'View work')}</li>`).join('')}</ul></section>`;
+}
+function workHTML() {
+  const all=L.workRows(S.model,{samples:S.samples});
+  if(S.workId) {
+    const w=all.find(w=>w.id===S.workId);
+    if(!w) return `${workQueueHTML(S.workId)}<div class="empty"><b>This work is not in the current snapshot</b><p>Refresh to check the latest filed state. Device changes remain listed separately until the canonical result arrives.</p>${btn('view','work','All work')}${btn('view','settings','Device queue')}</div>`;
+    const sessions=L.workSessions(w,S.model.sessions);
+    return `<div class="work-heading"><div><h2>${esc(w.title)}</h2><p class="small">${esc(w.project || 'No project')} · Last reported ${esc(stamp(w.updated_at))}</p></div><div class="acts">${btn('view','work','All work')}${btn('work-edit',w.id,'Update work',{cls:'primary'})}</div></div>
+      ${workQueueHTML(w.id)}
+      <div class="work-detail-grid"><section class="card work-card"><h3>Requested outcome</h3><p>${esc(w.request)}</p><dl class="work-facts"><dt>Status reported</dt><dd>${esc(L.WORK_STATUS[w.status])}</dd><dt>Stage</dt><dd>${esc(w.stage || 'Not recorded')}</dd><dt>Responsible</dt><dd>${esc(w.responsible || 'Unassigned')}</dd><dt>Next action</dt><dd>${esc(w.next_action || 'Not recorded')}</dd></dl>${w.waiting ? `<p class="callout"><b>Waiting${w.waiting_on?' on '+esc(w.waiting_on):''}:</b> ${esc(w.waiting)}</p>` : ''}
+      <h3>Dependencies</h3>${w.dependencies.length ? `<ul>${w.dependencies.map(d=>`<li><b>${esc(d.title)}</b> — ${esc(d.state)}${d.owner?' · '+esc(d.owner):''}</li>`).join('')}</ul>` : '<p class="small">No dependencies recorded.</p>'}</section>
+      <section class="card work-card"><h3>${esc(L.WORK_VERIFICATION[w.verification.state])}</h3><p>${esc(w.verification.detail || 'No verification detail recorded.')}</p>${w.verification.by?`<p class="small">Recorded by ${esc(w.verification.by)}</p>`:''}${workEvidenceHTML(w.evidence)}<p class="small">Reported work status and recorded verification are separate observations.</p></section></div>
+      <section class="card work-card"><h3>Session continuity</h3>${sessions.length ? sessions.map(s=>`<details><summary>${esc(s.title || s.id)} · ${esc(s.vendor)}</summary><p class="small">${esc(s.id)}</p>${s.checkpoints.length?`<ol class="work-history">${[...s.checkpoints].reverse().map(c=>`<li><b>${esc(c.mission?.title || 'Checkpoint')}</b><p>${esc(c.did)}</p><p><b>Next:</b> ${esc(c.next || 'Not recorded')}</p><p class="small">${esc(stamp(c.at))} · ${esc(c.claim || 'reported')}</p></li>`).join('')}</ol>`:'<p>No checkpoint for this work has been recorded in this snapshot.</p>'}</details>`).join(''):'<p class="small">No session references or linked checkpoints recorded.</p>'}</section>
+      <details class="card work-card"><summary>Revision and correction history</summary><p class="small">Work ${esc(w.id)} · Revision ${esc(w.revision)}</p><ol class="work-history">${[...w.history].reverse().map(h=>`<li>${esc(h.summary || h.correction || h.kind || 'Work update')} <span class="small">${esc(stamp(h.at || h.occurred_at))} · ${esc(h.producer || '')}</span></li>`).join('') || '<li>No revision details in this snapshot.</li>'}</ol>${w.conflicts.length?`<h3>Conflicting updates</h3><ul>${w.conflicts.map(c=>`<li>${esc(c.event_id)} — ${c.resolved_by?'Resolution recorded':'Filed but not applied'}${c.resolved_by?` <span class="small">${esc(c.resolved_by)}</span>`:''}</li>`).join('')}</ul>`:''}</details>`;
+  }
+  return `<div class="work-heading"><p class="lead">One request can span several sessions. Open it to see the next action, evidence and handoffs.</p>${btn('work-new','x','New work',{cls:'primary'})}</div>${workQueueHTML()}${all.length?`<div class="cards wide">${all.map(workCardHTML).join('')}</div>`:'<div class="empty"><b>No work recorded yet</b><p>Create a request or have an agent register existing unfinished work.</p></div>'}`;
+}
+function reportsHTML() {
+  const r=L.workReview(S.model,{samples:S.samples});
+  const section=(title,items,empty)=>`<section class="card work-card"><h2>${esc(title)} <span class="count">${items.length}</span></h2>${items.length?`<ul class="work-review-list">${items.map(w=>`<li>${workLink(w)}<p>${esc(w.next_action || w.waiting || 'Next action not recorded.')}</p></li>`).join('')}</ul>`:`<p class="muted">${esc(empty)}</p>`}</section>`;
+  return `<p class="lead">An operational review of the current work records. Last-reported status, recorded verification and unresolved effects remain distinct.</p><div class="work-heading">${btn('view','work','Open work')}${btn('work-new','x','New work')}</div><div class="cards wide">
+    ${section('Needs your input',r.ownerAttention,'No current work explicitly asks for owner input.')}
+    ${section('Waiting, paused or dependent',r.waiting,'No open work is waiting, paused or dependent.')}
+    ${section('Responsibility unassigned',r.unassigned,'Open work has a responsible party recorded.')}
+    ${section('Completion needs verification',r.needsVerification,'No reported completion is awaiting recorded verification.')}
+    ${section('Completed with open dependencies',r.completionDependencies,'Reported completions have no open dependency records.')}
+    ${section('Unresolved conflicting updates',r.conflicts,'No unresolved revision conflicts recorded.')}
+    ${section('Recent work updates',r.recent,'No work updates yet.')}</div><p class="small">${r.completed.length} completed as reported · ${r.verified.length} with verification recorded. Counts describe records, not live process health or independent certification.</p>`;
+}
+function workEditorHTML() {
+  const w=S.workOriginal, d=(k,fallback='')=>draft('w:'+k,w?.[k]??fallback), v=draft('w:verification',w?.verification?.state || 'unverified');
+  const input=(id,label,value,area=false)=>`<label for="w-${id}">${label}${area?`<textarea id="w-${id}" data-draft="w:${id}" rows="3">${esc(value)}</textarea>`:`<input id="w-${id}" data-draft="w:${id}" value="${esc(value)}">`}</label>`;
+  return `<section class="modal work-editor" role="dialog" aria-modal="true" aria-label="${w?'Update work':'New work'}"><h2>${w?'Update work':'New work'}</h2>
+    ${S.workPendingId?'<p class="callout">Review your earlier change against the latest work. Saving records an explicit correction.</p>':''}
+    ${input('title','Title',d('title'))}${input('request','Requested outcome',d('request'),true)}<div class="work-form-grid">${input('project','Project',d('project'))}${input('responsible','Responsible person or agent',d('responsible'))}
+    <label for="w-status">Status reported<select id="w-status" data-draft="w:status">${Object.entries(L.WORK_STATUS).map(([id,label])=>opt(id,label,d('status','queued'))).join('')}</select></label>${input('stage','Current stage',d('stage'))}</div>
+    ${input('next_action','Next useful action',d('next_action'),true)}${input('waiting','Waiting detail',d('waiting'),true)}<label for="w-waiting_on">Waiting on<select id="w-waiting_on" data-draft="w:waiting_on">${[['','Not specified'],['owner','Owner input'],['external','External dependency'],['agent','Agent action']].map(([id,label])=>opt(id,label,d('waiting_on',''))).join('')}</select></label>
+    <details data-d="work-editor-evidence" ${S.openDetails.has('work-editor-evidence')?'open':''}><summary>Evidence, verification and correction</summary>${input('evidence','Evidence locations, one per line',draft('w:evidence',(w?.evidence || []).map(e=>e.uri).join('\n')),true)}<label for="w-verification">Verification recorded<select id="w-verification" data-draft="w:verification">${Object.entries(L.WORK_VERIFICATION).map(([id,label])=>opt(id,label,v)).join('')}</select></label>
+    ${input('verification_detail','What was checked',draft('w:verification_detail',w?.verification?.detail || ''),true)}${input('verification_by','Who checked it',draft('w:verification_by',w?.verification?.by || 'owner-ui'))}${input('correction','Correction or decision',draft('w:correction',''),true)}</details>
+    <p class="small">Saving a completed status does not change the verification selection. Existing dependencies and session references are retained.</p><div class="acts">${btn('work-save','x',S.workSaving?'Saving…':'Save work',{cls:'primary',extra:S.workSaving?'disabled':''})}${w?btn('work-rebase','x','Load latest, keep edits'):''}${btn('work-cancel','x','Cancel')}</div></section>`;
+}
+function startWorkEditor(w=null,pending=null) {
+  for(const k of [...S.drafts.keys()]) if(k.startsWith('w:')) S.drafts.delete(k);
+  S.workOriginal=w?structuredClone(w):null;S.workEditing=w?.id || 'new';S.workPendingId=pending?.record.event_id || null;
+  if(pending) {for(const [k,v] of Object.entries(pending.record.payload)) if(['title','request','project','status','stage','responsible','next_action','waiting','waiting_on'].includes(k)) S.drafts.set('w:'+k,v);
+    const p=pending.record.payload;S.drafts.set('w:evidence',(p.evidence || []).map(e=>e.uri).join('\n'));S.drafts.set('w:verification',p.verification?.state || 'unverified');S.drafts.set('w:verification_detail',p.verification?.detail || '');S.drafts.set('w:verification_by',p.verification?.by || 'owner-ui');S.drafts.set('w:correction','Reviewed conflicting change '+pending.record.event_id);}
+  render();$('w-title')?.focus();
+}
+async function saveWork() {
+  if(S.workSaving) return;
+  const w=S.workOriginal,get=(k,def='')=>String(draft('w:'+k,w?.[k]??def)).trim();
+  const title=get('title'),request=get('request');
+  if(!title || !request) {toast('Give the work a title and requested outcome.');return $(title?'w-request':'w-title')?.focus();}
+  const uris=String(draft('w:evidence',(w?.evidence || []).map(e=>e.uri).join('\n'))).split('\n').map(s=>s.trim()).filter(Boolean);
+  const evidence=uris.map(uri=>(w?.evidence || []).find(e=>e.uri===uri) || {uri});
+  const verification={state:String(draft('w:verification',w?.verification?.state || 'unverified')),detail:String(draft('w:verification_detail',w?.verification?.detail || '')).trim(),by:String(draft('w:verification_by',w?.verification?.by || 'owner-ui')).trim()};
+  if(verification.state==='verified' && (!verification.detail || !verification.by || !evidence.length)) return toast('Recorded verification needs what was checked, who checked it and an evidence location.');
+  const pendingId=S.workPendingId,rec=L.records.work({prev:w,changes:{title,request,project:get('project'),status:get('status','queued'),stage:get('stage'),responsible:get('responsible'),next_action:get('next_action'),waiting:get('waiting'),waiting_on:get('waiting_on'),evidence,verification,correction:String(draft('w:correction','')).trim(),resolved_conflicts:[...(w?.resolved_conflicts || []),...(pendingId?[pendingId]:[])]}});
+  S.workSaving=true;render();const r=await send(rec);S.workSaving=false;
+  if(!r.ok) {if(S.pending.some(p=>p.record.event_id===rec.event_id)) S.workPendingId=rec.event_id;render();return toast(r.message);}
+  const current=S.model.work.find(w=>w.id===rec.subject_id),applied=current && (current.revision===rec.event_id || current.history.some(h=>h.event_id===rec.event_id));
+  if(!r.queued && !r.kept && !applied) {if(!S.pending.some(p=>p.record.event_id===rec.event_id)) S.pending.push({record:rec,state:'conflict',workConflict:true,at:new Date().toISOString()});savePending();render();return toast('The update was filed but was not applied. Review the current work revision.');}
+  if(pendingId) {S.pending=S.pending.filter(p=>p.record.event_id!==pendingId);savePending();}
+  S.workEditing=null;S.workOriginal=null;S.workPendingId=null;setView('work',{workId:rec.subject_id});
+  toast(r.kept?'Work change is saved on this device and awaits upload.':r.queued?'Work change uploaded; waiting for canonical filing.':'Work update applied.');
 }
 
 function resourcesHTML() {
@@ -625,11 +722,11 @@ function settingsHTML() {
   const door = doors.door, local = door === 'local';
   if (!local) S.openDetails.add('gh');
   return `<section class="panel"><h2>Connection</h2>
-      <p class="lead"><span class="chip ${S.error ? 'warn' : 'ok'}">${S.error ? 'Problem' : 'Connected'}</span> ${S.error ? esc(S.error.message) : local ? 'This page reads live from the app on this PC. Nothing to set up.' : door === 'github' ? 'This page reads the private GitHub copy, which the PC updates every 15 minutes.' : 'Not connected yet.'}</p>
+      <p class="lead"><span class="chip ${S.error ? 'warn' : 'ok'}">${S.error ? 'Problem' : 'Connected'}</span> ${S.error ? esc(S.error.message) : local ? 'This page reads live from the app on this PC. Nothing to set up.' : door === 'github' ? 'This page reads the private GitHub copy, which the PC updates every five minutes.' : 'Not connected yet.'}</p>
       ${det('gh', 'Use away from the PC (GitHub copy)', githubFields(), 'fold')}
     </section>
     <section class="panel"><h2>Your changes</h2>
-      ${S.pending.length ? `<p class="lead">Changes made away from the PC are filed by the PC on its next sync, usually within 15 minutes.</p><ul class="queue">${S.pending.map(p => { const st = pStatus(p); return `<li><span>${esc(p.record.summary)}${p.error ? `<span class="small"> · ${esc(p.error)}</span>` : ''}</span><span class="chip ${st.level === 'bad' ? 'bad' : st.level === 'warn' ? 'warn' : 'wait'}">${esc(st.label)}</span>${btn('discard', p.record.event_id, p.state === 'sent' ? 'Stop tracking' : 'Discard', { cls: 'link' })}</li>`; }).join('')}</ul><div class="ask-row">${btn('retry', 'x', 'Send again now')}</div><p class="small">“Stop tracking” only removes it from this list. A change already on GitHub will still be filed.</p>` : '<p class="lead">Everything you changed is filed.</p>'}
+      ${S.pending.length ? `<p class="lead">Changes made away from the PC are filed by the PC on its next sync, usually within five minutes.</p><ul class="queue">${S.pending.map(p => { const st = pStatus(p); return `<li><span>${esc(p.record.summary)}${p.error ? `<span class="small"> · ${esc(p.error)}</span>` : ''}</span><span class="chip ${st.level === 'bad' ? 'bad' : st.level === 'warn' ? 'warn' : 'wait'}">${esc(st.label)}</span>${p.workConflict?btn('work-review-conflict',p.record.event_id,'Review my change'):''}${btn('discard', p.record.event_id, p.state === 'sent' ? 'Stop tracking' : 'Discard', { cls: 'link' })}</li>`; }).join('')}</ul><div class="ask-row">${btn('retry', 'x', 'Send again now')}</div><p class="small">“Stop tracking” only removes it from this list. A change already on GitHub will still be filed.</p>` : '<p class="lead">Everything you changed is filed.</p>'}
     </section>
     <section class="panel"><h2>Display</h2>
       <label class="check" for="s-samples"><input type="checkbox" id="s-samples" data-a="samples" data-id="x" ${S.samples ? 'checked' : ''}> Show sample records (marked “Sample”)</label>
@@ -686,6 +783,8 @@ function render() {
   const main = $('main');
   if (!S.model) main.innerHTML = S.loading ? '<div class="empty"><b>Loading…</b></div>' : setupHTML();
   else if (S.view === 'home') main.innerHTML = homeHTML();
+  else if (S.view === 'work') main.innerHTML = workHTML();
+  else if (S.view === 'reports') main.innerHTML = reportsHTML();
   else if (S.view === 'resources') main.innerHTML = resourcesHTML();
   else if (S.view === 'activity') main.innerHTML = activityHTML();
   else if (S.view === 'board') main.innerHTML = boardHTML();
@@ -706,10 +805,11 @@ function render() {
 
 const itemById = id => S.model.items.find(i => i.id === id);
 const viewOf = item => L.view(item, S.model, now);
-function setView(v, { keep = false } = {}) {
+function setView(v, { keep = false, workId = '' } = {}) {
+  S.workId=v==='work'?workId:'';
   S.view = v; S.page = 1; S.selected.clear(); S.menu = null; S.mobileItem = null; document.body.classList.remove('item-focus');
   if (!keep) { S.filters = noFilters(); S.filtersOpen = false; }
-  try { history.replaceState(null, '', v === 'home' ? location.pathname : '#' + v); } catch {}
+  try { history.replaceState(null, '', v === 'home' ? location.pathname : '#'+v+(v==='work' && S.workId?'/'+encodeURIComponent(S.workId):'')); } catch {}
   render(); $('view-title').focus({ preventScroll: true }); window.scrollTo({ top: 0 });
 }
 const parseTags = text => { const seen = new Map(); for (const t of String(text).split(',').map(x => x.trim().slice(0, 80)).filter(Boolean)) if (!seen.has(t.toLowerCase())) seen.set(t.toLowerCase(), t); return [...seen.values()].slice(0, 20); };
@@ -741,8 +841,15 @@ async function onAction(a, id, el) {
   if (a.startsWith('menu-')) { S.menu = null; a = a.slice(5); if (a === 'hide' && itemById(id)?.type !== 'story') return; }
   switch (a) {
     case 'view': return setView(id);
-    case 'goto': { const it = itemById(id); if (!it) return; const v = it.note ? 'notes' : it.type === 'story' ? 'feed' : it.type === 'goal' ? 'goals' : it.type === 'idea' ? 'ideas' : 'messages'; S.expanded.add(id); setView(viewOf(it).needsYou ? 'today' : v); return $(`open-${key(id)}`)?.focus(); }
-    case 'open': return openItem(id);
+    case 'open-work': return setView('work',{workId:id});
+    case 'work-new': return startWorkEditor();
+    case 'work-edit': return startWorkEditor(m.work.find(w=>w.id===id));
+    case 'work-cancel': S.workEditing=null;S.workOriginal=null;S.workPendingId=null;render();return $('view-title').focus();
+    case 'work-save': return saveWork();
+    case 'work-rebase': {const latest=m.work.find(w=>w.id===S.workOriginal?.id);if(!latest)return toast('The current work is not in this snapshot. Refresh and review it.');S.workOriginal=structuredClone(latest);if(S.workPendingId)S.drafts.set('w:correction',`Reviewed work change ${S.workPendingId} against ${latest.revision}`);render();return toast('Latest work loaded; your edited fields are retained.');}
+    case 'work-review-conflict': {const p=S.pending.find(p=>p.record.event_id===id),w=p && m.work.find(w=>w.id===p.record.subject_id);if(!p || !w)return toast('Refresh to load the current work before reviewing this change.');return startWorkEditor(w,p);}
+    case 'goto': { const it = itemById(id); if (!it) return; if(it.workId) return setView('work',{workId:it.workId});const v = it.note ? 'notes' : it.type === 'story' ? 'feed' : it.type === 'goal' ? 'goals' : it.type === 'idea' ? 'ideas' : 'messages'; S.expanded.add(id); setView(viewOf(it).needsYou ? 'today' : v); return $(`open-${key(id)}`)?.focus(); }
+    case 'open': {const item=itemById(id);return item?.workId?setView('work',{workId:item.workId}):openItem(id);}
     case 'select': el.checked ? S.selected.add(id) : S.selected.delete(id); return render();
     case 'tag': S.filters.tag = id; S.filtersOpen = true; S.page = 1; S.selected.clear(); return render();
     case 'filters': S.filtersOpen = !S.filtersOpen; return render();
@@ -831,7 +938,7 @@ async function onAction(a, id, el) {
       return $('view-title').focus();
     }
     case 'undo': { const u = S.undo; if (!u) return; S.undo = null; $('toast').hidden = true; const r = await send(u.map(fn => fn())); return toast(said(r, 'Undone.', 'Undo queued.')); }
-    case 'new': if (S.view === 'notes') { S.editing = 'new'; render(); return $('n-title')?.focus(); } S.compose = !S.compose; if (!isList(S.view) && S.view !== 'home') setView('home'); render(); return S.compose ? $('c-title')?.focus() : $('new').focus();
+    case 'new': if(['work','reports'].includes(S.view))return startWorkEditor();if (S.view === 'notes') { S.editing = 'new'; render(); return $('n-title')?.focus(); } S.compose = !S.compose; if (!isList(S.view) && S.view !== 'home') setView('home'); render(); return S.compose ? $('c-title')?.focus() : $('new').focus();
     case 'compose-close': S.compose = false; render(); return $('new').focus();
     case 'compose-send': {
       const type = draft('c:type', 'message'), title = String(draft('c:title')).trim(), body = String(draft('c:body')).trim(), to = $('c-to')?.value || '';
@@ -884,7 +991,7 @@ document.addEventListener('input', e => {
 document.addEventListener('toggle', e => { const d = e.target; if (d.dataset?.d) (d.open ? S.openDetails.add(d.dataset.d) : S.openDetails.delete(d.dataset.d)); }, true);
 document.addEventListener('keydown', e => {
   if (!$('overlay').hidden) {
-    if (e.key === 'Escape') { cancelNoteEditor({ renderNow: false }); S.menu = null; S.unlock = null; render(); $('new')?.focus(); return; }
+    if (e.key === 'Escape') { S.workEditing=null;S.workOriginal=null;S.workPendingId=null;cancelNoteEditor({ renderNow: false }); S.menu = null; S.unlock = null; render(); $('new')?.focus(); return; }
     if (e.key === 'Tab') {
       const els = [...$('overlay').querySelectorAll('button,input,select,textarea,a')].filter(x => !x.disabled), first=els[0], last=els.at(-1);
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
@@ -900,7 +1007,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'j' && rows.length) rows[Math.min(rows.length - 1, i + 1)].focus();
   else if (e.key === 'k' && rows.length) rows[Math.max(0, i - 1)].focus();
 });
-window.addEventListener('hashchange', () => { const v = location.hash.slice(1); if (TITLES[v] && v !== S.view) setView(v); });
+window.addEventListener('hashchange', () => { const h=location.hash.slice(1),v=h.split('/')[0];let workId='';try{if(v==='work' && h.includes('/'))workId=decodeURIComponent(h.slice(5));}catch{}if(TITLES[v] && (v!==S.view || workId!==S.workId))setView(v,{workId}); });
 window.addEventListener('online', () => reload({ quiet: true }));
 document.addEventListener('visibilitychange', () => { if (document.hidden && (S.decrypted.size || S.unlock || hasEncryptedDrafts() || S.editing && itemById(S.editing)?.encrypted)) lockNotes(); if (!document.hidden && doors.door !== 'local') reload({ quiet: true }); });
 
@@ -916,6 +1023,6 @@ setInterval(() => {
 }, 60000);
 
 const h = location.hash.slice(1);
-if (TITLES[h]) S.view = h;
+if (TITLES[h.split('/')[0]]) {S.view=h.split('/')[0];try{if(S.view==='work' && h.includes('/'))S.workId=decodeURIComponent(h.slice(5));}catch{}}
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('./sw.js').catch(() => {});
 reload().then(() => { snoozedIds = snoozedNow(); });

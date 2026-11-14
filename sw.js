@@ -1,6 +1,6 @@
 // Keeps the app's own files available offline. Network first, so a new version shows as soon as
 // it is reachable; the saved copy is used only when the network is not. Data is not handled here.
-const CACHE = 'shared-intelligence-shell-v5';
+const CACHE = 'shared-intelligence-shell-v6';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'logic.js', 'data.js', 'crypto.js', 'icon.svg', 'icon-192.png', 'apple-touch-icon.png', 'manifest.webmanifest'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE && /^(signal|shared-intelligence)-shell-/.test(k)).map(k => caches.delete(k)))).then(() => self.clients.claim())); });

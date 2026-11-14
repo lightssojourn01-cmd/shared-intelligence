@@ -305,3 +305,40 @@ html { overflow-x: clip; }
 .continuity-card { min-width: 0; overflow-wrap: anywhere; }
 .continuity-card details { margin-top: 12px; }
 .continuity-card summary { cursor: pointer; }
+
+/* Work stays legible as a current request, with history and evidence nearby. */
+.work-hub { margin: 0 0 24px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel, #272727); }
+.work-heading { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:16px; }
+.work-heading h2 { margin:0 0 6px; }
+.work-heading .lead { flex:1 1 350px; margin:0; }
+.work-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:16px 0; }
+.work-metrics > div { padding:12px; background:var(--page); border-radius:6px; }
+.work-metrics dt { font-size:12px; color:var(--muted); }
+.work-metrics dd { margin:8px 0 0; font-size:26px; font-weight:650; }
+.work-brief, .work-review-list { margin:0; padding:0; list-style:none; }
+.work-brief li, .work-review-list li { padding:12px 0; border-top:1px solid var(--line); }
+.work-brief p, .work-review-list p { margin:6px 0 0; }
+.work-link { display:flex; flex-direction:column; align-items:flex-start; gap:5px; max-width:100%; padding:0; border:0; color:var(--accent); background:transparent; text-align:left; cursor:pointer; overflow-wrap:anywhere; }
+.work-link > span:first-child { font-weight:650; font-size:16px; }
+.work-link:hover > span:first-child { text-decoration:underline; }
+.work-card { min-width:0; margin-bottom:16px; overflow-wrap:anywhere; }
+.work-card h2, .work-card h3 { margin-top:0; }
+.work-card details { margin:12px 0; }
+.work-card summary { cursor:pointer; padding:6px 0; }
+.work-card .card-top { align-items:flex-start; flex-wrap:wrap; }
+.work-facts { display:grid; grid-template-columns:minmax(90px,auto) minmax(0,1fr); gap:8px 14px; }
+.work-facts dt { color:var(--muted); }
+.work-facts dd { margin:0; }
+.work-detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.work-history li { margin:12px 0; }
+.work-evidence { padding-left:20px; }
+.work-form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 14px; }
+.work-editor { overflow-wrap:anywhere; }
+.work-editor input, .work-editor textarea, .work-editor select { width:100%; box-sizing:border-box; }
+@media (max-width:740px) {
+  .work-hub { padding:16px; }
+  .work-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .work-detail-grid, .work-form-grid { grid-template-columns:minmax(0,1fr); }
+  .work-facts { grid-template-columns:minmax(0,1fr); gap:4px; }
+  .work-facts dd { margin-bottom:9px; }
+}
