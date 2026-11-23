@@ -26,6 +26,7 @@
   <div class="top-right">
     <button type="button" id="queue" class="pill warn linkish" data-a="queue" data-id="x" hidden></button>
     <span id="fresh" class="pill warn" role="status">Loading…</span>
+    <button type="button" class="btn palette-btn" id="palette-open" data-a="palette" data-id="x" title="Command menu">Jump to… <kbd id="palette-key">Ctrl K</kbd></button>
     <button type="button" class="btn" id="refresh" data-a="refresh" data-id="x">Refresh</button>
     <button type="button" class="btn primary" id="new" data-a="new" data-id="x" aria-expanded="false" hidden>New</button>
   </div>
@@ -40,6 +41,7 @@
 </div>
 <nav id="mobile-tabs" aria-label="Phone navigation"></nav>
 <div id="overlay" class="overlay" hidden></div>
+<div id="ptr" class="ptr" role="status" hidden></div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 <noscript><p style="padding:16px">This dashboard needs JavaScript.</p></noscript>
 <script type="module" src="app.js"></script>

@@ -393,6 +393,7 @@ export function view(item, model, now = Date.now()) {
 
 export const VIEWS = {
   today: { title: 'Needs you', types: null },
+  upcoming: { title: 'Upcoming', types: null },
   feed: { title: 'Feed', types: ['story'] },
   notes: { title: 'Notes', types: ['story'] },
   goals: { title: 'Goals', types: ['goal'] },
@@ -414,6 +415,7 @@ export function inView(viewId, item, v, opts = {}) {
   if (viewId === 'saved') return item.saved;
   if (item.superseded || v.snoozed) return false;
   if (viewId === 'today') return v.needsYou;
+  if (viewId === 'upcoming') return !!item.dueAt && !!ts(item.dueAt) && v.status !== 'done';
   if (viewId === 'notes') return item.note;
   if (viewId === 'feed' && item.note) return false;
   if (viewId === 'feed' && item.attentionOnly) return false;
@@ -428,6 +430,9 @@ export function matches(item, v, f) {
   if (f.claim && item.claim !== f.claim) return false;
   if (f.status && v.status !== f.status) return false;
   if (f.unread && v.read) return false;
+  if (f.pinned && !v.pinned) return false;
+  if (f.due && !(item.dueAt && ts(item.dueAt))) return false;
+  if (f.newSince && !isNewSince(item, v, f.newSince)) return false;
   if (f.q) {
     const hay = [item.title, item.body, item.kicker, item.topic, item.producer, item.nextAction, item.whyShown, ...v.tags,
       ...(item.evidence || []).flatMap(e => [e.title, e.summary])].join(' ').toLowerCase();
@@ -440,6 +445,7 @@ const PRI = { high: 0, normal: 1, low: 2 };
 export function sortItems(list, sort = 'new') {
   const cmp = sort === 'title' ? (a, b) => a.item.title.localeCompare(b.item.title)
     : sort === 'old' ? (a, b) => a.item.t - b.item.t
+    : sort === 'due' ? (a, b) => (ts(a.item.dueAt) || Infinity) - (ts(b.item.dueAt) || Infinity) || b.item.t - a.item.t
     : (a, b) => b.item.t - a.item.t;
   return list.sort((a, b) => (b.v.pinned - a.v.pinned) || (sort === 'priority' ? PRI[a.v.priority] - PRI[b.v.priority] : 0) || cmp(a, b));
 }
@@ -451,7 +457,8 @@ export function rowsFor(model, viewId, filters = {}, opts = {}, now = Date.now()
     const v = view(item, model, now);
     if (inView(viewId, item, v, opts) && matches(item, v, filters)) out.push({ item, v });
   }
-  return sortItems(out, filters.sort);
+  // Upcoming reads soonest-due first unless the owner chose another order
+  return sortItems(out, viewId === 'upcoming' && (!filters.sort || filters.sort === 'new') ? 'due' : filters.sort);
 }
 
 export function counts(model, opts = {}, now = Date.now()) {
@@ -561,4 +568,51 @@ export function board(model, opts = {}, now = Date.now()) {
   }
   for (const k of Object.keys(cols)) sortItems(cols[k], 'priority');
   return cols;
+}
+
+// ---------- feature pass 2026-11-22 ----------
+
+/** Not read, not the owner's own, and newer than the owner's previous visit (`since`, a time in ms). */
+export const isNewSince = (item, v, since) => !!since && item.t > since && !(v && v.read) && !isOwner(item.producer) && !item.superseded;
+
+const startOfDay = t => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+/** Which due-date section an item falls under. */
+export function dueGroup(at, now = Date.now()) {
+  const t = ts(at); if (!t) return 'No date';
+  const days = Math.round((startOfDay(t) - startOfDay(now)) / 864e5);
+  return t < now && days < 0 ? 'Overdue' : days <= 0 ? 'Today' : days === 1 ? 'Tomorrow' : days <= 7 ? 'Next 7 days' : 'Later';
+}
+
+/** How a list can be grouped, as in a task app's display options. */
+export const GROUPS = { '': 'No grouping', day: 'Date', due: 'Due date', producer: 'Agent', status: 'My status', priority: 'Priority', topic: 'Topic' };
+const ORDER = {
+  day: ['Pinned', 'Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days', 'Earlier'],
+  due: ['Overdue', 'Today', 'Tomorrow', 'Next 7 days', 'Later', 'No date'],
+  status: Object.keys(STATUS), priority: ['high', 'normal', 'low'],
+};
+/** Rows in sections: [{ key, rows }]. Sections keep the rows' own order inside them. */
+export function groupRows(rows, by, now = Date.now()) {
+  if (!by || !GROUPS[by]) return [{ key: '', rows }];
+  const keyOf = r => by === 'day' ? dateGroup(r.item.at, now) : by === 'due' ? dueGroup(r.item.dueAt, now)
+    : by === 'producer' ? String(r.item.producer || 'Unknown') : by === 'status' ? r.v.status : by === 'priority' ? r.v.priority : (r.item.topic || 'No topic');
+  const g = new Map();
+  for (const r of rows) { const k = keyOf(r); if (!g.has(k)) g.set(k, []); g.get(k).push(r); }
+  const order = ORDER[by];
+  const keys = [...g.keys()].sort((a, b) => order ? (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99) : g.get(b).length - g.get(a).length || a.localeCompare(b));
+  return keys.map(key => ({ key, rows: g.get(key) }));
+}
+
+/** Snooze choices relative to `now`, in local time, as a phone mail app offers them. */
+export function snoozeOptions(now = Date.now()) {
+  const d = new Date(now), dow = d.getDay();
+  const at = (days, h) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, h, 0, 0).toISOString();
+  const h = d.getHours(), out = [];
+  if (h < 15) out.push({ key: 'later', label: 'Later today', at: at(0, 18) });
+  else if (h < 20) out.push({ key: 'later', label: 'In 3 hours', at: new Date(now + 3 * 3600e3).toISOString() });   // none late at night
+  out.push({ key: 'tomorrow', label: 'Tomorrow morning', at: at(1, 8) });
+  if (dow >= 1 && dow <= 4) out.push({ key: 'weekend', label: 'This weekend', at: at(6 - dow, 9) });
+  const toMonday = ((8 - dow) % 7) || 7;
+  out.push({ key: 'nextweek', label: 'Next week', at: at(toMonday === 1 ? 8 : toMonday, 8) });   // on a Sunday, not tomorrow again
+  out.push({ key: 'month', label: 'In a month', at: at(30, 8) });
+  return out;
 }

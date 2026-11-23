@@ -9,11 +9,20 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const PAGE = 100;
 const APP_NAME = 'Shared Intelligence'; // Rename the build here.
-const NAV = [['home', 'Overview'], ['work', 'Work'], ['today', 'Needs you'], ['reports', 'Review'], ['feed', 'Feed'], ['activity', 'Activity'], ['notes', 'Notes'], ['board', 'Board'], ['goals', 'Goals'], ['ideas', 'Ideas'], ['messages', 'Messages'], null,
+const NAV = [['home', 'Overview'], ['work', 'Work'], ['today', 'Needs you'], ['upcoming', 'Upcoming'], ['reports', 'Review'], ['feed', 'Feed'], ['activity', 'Activity'], ['notes', 'Notes'], ['board', 'Board'], ['goals', 'Goals'], ['ideas', 'Ideas'], ['messages', 'Messages'], null,
   ['saved', 'Saved'], ['snoozed', 'Snoozed'], ['hidden', 'Hidden'], ['history', 'History'], null, ['agents', 'Agents'], ['projects', 'Projects'], ['resources', 'Resources'], ['settings', 'Settings']];
 const TITLES = Object.fromEntries(NAV.filter(Boolean));
 const isList = v => !!L.VIEWS[v];
-const noFilters = () => ({ q: '', producer: '', topic: '', tag: '', claim: '', status: '', unread: false, sort: 'new' });
+const noFilters = () => ({ q: '', producer: '', topic: '', tag: '', claim: '', status: '', unread: false, newSince: false, pinned: false, due: false, sort: 'new', group: '' });
+const PHONE = () => typeof matchMedia === 'function' && matchMedia('(max-width: 740px)').matches;
+const ICON = {
+  home: '<path d="M4 11.5 12 5l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1z"/>',
+  today: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  feed: '<path d="M5 5h14M5 10h14M5 15h9M5 20h6"/>',
+  notes: '<path d="M6 3.5h9l3.5 3.5v13.5H6z"/><path d="M9 11h6M9 15h6"/>',
+  more: '<circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/>',
+};
+const icon = n => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICON[n]}</svg>`;
 
 const S = {
   view: 'home', filters: noFilters(), expanded: new Set(), selected: new Set(), page: 1, drafts: new Map(), openDetails: new Set(),
@@ -23,6 +32,12 @@ const S = {
 };
 Object.assign(S, { inFlight: 0, reloadLater: false, layout: store.get('si.notesLayout', 'gallery'), editing: null, menu: null, mobileItem: null, decrypted: new Map(), unlock: null, storageError: false, cryptoEpoch: 0, secretDrafts: new Set(), loadGeneration: 0, workId:'', workEditing:null, workOriginal:null, workPendingId:null, workSaving:false });
 let now = Date.now();
+// "New since your last visit": the previous visit's time, kept on this device. It moves forward when
+// the page is put away, so what was new stays marked while the owner is looking at it.
+S.since = Number(store.get('si.lastVisit', 0)) || 0;
+const markVisit = () => store.set('si.lastVisit', Date.now());
+if (!S.since) markVisit();
+S.views = Array.isArray(store.get('si.views', [])) ? store.get('si.views', []) : [];
 
 // ---------- data flow ----------
 
@@ -220,8 +235,14 @@ function renderNav() {
   const c = S.model ? L.counts(S.model, { samples: S.samples }, now) : {};
   if(S.model) c.work=L.workReview(S.model,{samples:S.samples}).active.length;
   $('nav').innerHTML = NAV.map(n => (n ? `<button type="button" class="nav-item" id="nav-${n[0]}" data-a="view" data-id="${n[0]}" aria-current="${S.view === n[0] ? 'page' : 'false'}"><span>${esc(n[1])}</span>${(n[0] === 'settings' ? S.pending.length : c[n[0]]) ? `<span class="n">${n[0] === 'settings' ? S.pending.length : c[n[0]]}</span>` : ''}</button>` : '<span class="nav-sep" aria-hidden="true"></span>')).join('');
+  if (S.views.length && S.model) $('nav').innerHTML += '<span class="nav-sep" aria-hidden="true"></span><span class="nav-head">Your views</span>' + S.views.map(sv => {
+    const n = L.rowsFor(S.model, sv.view, effFilters(sv.filters), { samples: S.samples }, now).length;
+    return `<button type="button" class="nav-item" id="nav-sv-${key(sv.id)}" data-a="open-view" data-id="${esc(sv.id)}" aria-current="${S.savedView === sv.id ? 'page' : 'false'}"><span>${esc(sv.name)}</span>${n ? `<span class="n">${n}</span>` : ''}</button>`;
+  }).join('');
   $('nav').querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
+/** The filters as logic.js reads them: "new since last visit" becomes the actual time. */
+function effFilters(f = S.filters) { return { ...f, newSince: f.newSince ? S.since : 0 }; }
 
 // ---------- rows ----------
 
@@ -231,8 +252,9 @@ function safeRow(row) {
 }
 function rowHTML({ item, v }) {
   const open = S.expanded.has(item.id), sel = S.selected.has(item.id), k = key(item.id), displayAt = item.note ? item.sourceUpdatedAt || item.at : item.at;
-  const chips = [
+  const chipList = [
     v.reason ? `<span class="chip need">${esc(v.reason)}</span>` : '',
+    L.isNewSince(item, v, S.since) ? '<span class="chip new" title="Arrived since your last visit">New</span>' : '',
     v.pinned ? '<span class="chip pinned">Pinned</span>' : '',
     item.encrypted ? `<span class="chip">${item.locked ? 'Encrypted · locked' : 'Encrypted · unlocked'}</span>` : '',
     item.queued ? '<span class="chip wait" title="Changed on this device; the PC has not filed it yet">Waiting for PC</span>' : '',
@@ -245,14 +267,17 @@ function rowHTML({ item, v }) {
     ...v.tags.slice(0, 2).map(t => `<button type="button" class="chip tag" id="tag-${k}-${key(t)}" data-a="tag" data-id="${esc(t)}">${esc(t)}</button>`),
     v.tags.length > 2 ? `<span class="chip">+${v.tags.length - 2}</span>` : '',
     `<span class="chip who">${esc(agentName(item.producer))}</span>`,
-  ].join('');
+  ].filter(Boolean);
+  // On a phone only the first three labels show; the rest are counted. The detail shows everything.
+  const chips = chipList.map((c, n) => n < 3 || n === chipList.length - 1 ? c : c.replace('class="chip', 'class="chip pxh')).join('')
+    + (chipList.length > 4 ? `<span class="chip pmore">+${chipList.length - 4}</span>` : '');
   return `<article class="row${open ? ' open' : ''}${sel ? ' sel' : ''}${v.read ? ' read' : ''}" role="listitem" style="--note-color:${noteColor(item.color)}" data-priority="${esc(v.priority)}" data-note="${!!item.note}" data-row="${esc(item.id)}">
     <div class="row-main">
       <label class="tick"><input type="checkbox" id="sel-${k}" data-a="select" data-id="${esc(item.id)}" ${sel ? 'checked' : ''}><span class="sr">Select ${esc(item.title)}</span></label>
       <button type="button" class="title" id="open-${k}" data-a="open" data-id="${esc(item.id)}" aria-expanded="${open}">
         <span class="chev" aria-hidden="true">›</span>${v.read ? '' : '<span class="dot" aria-hidden="true"></span><span class="sr">Unread. </span>'}<span class="t">${esc(item.title)}</span>
       </button>
-      <time class="when" datetime="${esc(displayAt)}" title="${esc(stamp(displayAt))}">${esc(L.ago(displayAt, now))}</time>${btn('item-menu', item.id, 'Actions', { cls: 'row-menu' })}
+      <time class="when" datetime="${esc(displayAt)}" title="${esc(stamp(displayAt))}">${esc(L.ago(displayAt, now))}</time>${btn('item-menu', item.id, '<span class="rm-t">Actions</span><span class="rm-i" aria-hidden="true">⋯</span>', { cls: 'row-menu', extra: `aria-label="Actions for ${esc(item.title)}"` })}
       <span class="chips">${chips}</span>
     </div>${item.note && !open ? `<p class="note-preview">${esc(item.body.slice(0, 220))}</p>` : ''}${open ? detailHTML(item, v) : ''}
   </article>`;
@@ -288,7 +313,8 @@ function detailHTML(item, v) {
       ${btn('done', item.id, v.status === 'done' ? 'Reopen' : 'Mark done')}
       ${btn('read', item.id, v.read ? 'Mark unread' : 'Mark read')}
       ${btn('pin', item.id, v.pinned ? 'Unpin' : 'Pin', { pressed: v.pinned })}
-      ${btn('snooze', item.id, v.snoozed ? 'Wake now' : 'Snooze 1 day')}
+      ${typeof navigator !== 'undefined' && navigator.share && !item.sensitive ? btn('share', item.id, 'Share') : ''}
+      ${v.snoozed ? btn('snooze', item.id, 'Wake now') : `<label class="inline" for="sz-${k}">Snooze<select id="sz-${k}" data-a="snooze-until" data-id="${esc(item.id)}">${opt('', 'Choose…', '')}${L.snoozeOptions(now).map(o => opt(o.at, `${o.label} · ${stamp(o.at)}`, '')).join('')}</select></label>`}
       ${story ? btn('save', item.id, item.saved ? 'Unsave' : 'Save', { pressed: item.saved }) : ''}
       ${story ? btn('hide', item.id, item.hidden ? 'Restore' : item.note ? 'Remove note' : 'Remove from Feed') : ''}
       <label for="st-${k}" class="inline">Status<select id="st-${k}" data-a="status" data-id="${esc(item.id)}">${Object.entries(L.STATUS).map(([s, l]) => opt(s, l, v.status)).join('')}</select></label>
@@ -346,6 +372,7 @@ function composeHTML() {
 
 const EMPTY = {
   today: ['Nothing needs you right now', 'Messages addressed to you, items you flag, and suggested next steps show up here.'],
+  upcoming: ['Nothing is due', 'Items an agent gives a due date appear here, soonest first.'],
   saved: ['Nothing saved', 'Save a Feed story from its row.'], snoozed: ['Nothing snoozed', ''], hidden: ['Nothing removed from the Feed', ''],
   history: ['No history yet', 'Records replaced by a newer one, and completed goals, appear here.'],
   ideas: ['No ideas yet', 'Add one with New, or an agent can file one.'], goals: ['No goals yet', ''], messages: ['No messages yet', 'Start one with New.'], feed: ['The Feed is empty', ''],
@@ -360,7 +387,7 @@ function bulkHTML() {
   return `<div class="bulk" role="region" aria-label="Actions for selected items"><b>${items.length} selected</b>
     ${b('read', 'Mark read', any((i, v) => !v.read))}${b('unread', 'Mark unread', any((i, v) => v.read))}
     ${b('pin', 'Pin', any((i, v) => !v.pinned))}${b('unpin', 'Unpin', any((i, v) => v.pinned))}
-    ${b('snooze', 'Snooze 1 day', any((i, v) => !v.snoozed))}${b('wake', 'Wake now', any((i, v) => v.snoozed))}
+    ${b('snooze', 'Snooze until tomorrow', any((i, v) => !v.snoozed))}${b('wake', 'Wake now', any((i, v) => v.snoozed))}
     ${b('done', 'Mark done', any((i, v) => v.status !== 'done'))}
     ${b('save', 'Save', any(i => i.type === 'story' && !i.saved))}${b('unsave', 'Unsave', any(i => i.type === 'story' && i.saved))}
     ${b('hide', 'Remove from Feed', any(i => i.type === 'story' && !i.hidden))}${b('restore', 'Restore to Feed', any(i => i.type === 'story' && i.hidden))}
@@ -369,8 +396,9 @@ function bulkHTML() {
 
 function listHTML() {
   const m = S.model, opts = { samples: S.samples }, f = S.filters;
-  const all = L.rowsFor(m, S.view, {}, opts, now), rows = listRows(), fc = L.facets(all);
-  const active = ['producer', 'topic', 'tag', 'claim', 'status'].filter(x => f[x]).length + (f.unread ? 1 : 0);
+  const all = L.rowsFor(m, S.view, { sort: f.sort }, opts, now), rows = listRows(), fc = L.facets(all);
+  const active = ['producer', 'topic', 'tag', 'claim', 'status'].filter(x => f[x]).length + (f.unread ? 1 : 0) + (f.newSince ? 1 : 0);
+  const unreadN = rows.filter(r => !r.v.read).length, custom = active || f.q || f.group || f.sort !== 'new';
   const shown = rows.slice(0, S.page * PAGE);
   const allSel = shown.length > 0 && shown.every(r => S.selected.has(r.item.id));
   const withCur = (list, cur) => (cur && !list.some(([p]) => p === cur) ? [[cur, 0], ...list] : list);
@@ -378,22 +406,36 @@ function listHTML() {
   return `${S.view === 'notes' ? notesTopHTML() : composeHTML()}
     <div class="controls">
       <div class="search"><label class="sr" for="q">Search this view</label><input type="search" id="q" data-filter="q" value="${esc(f.q)}" placeholder="Search" autocomplete="off"></div>
-      <button type="button" class="btn" id="filters-toggle" data-a="filters" data-id="x" aria-expanded="${S.filtersOpen}">Filters${active ? ` (${active})` : ''}</button>
-      <label class="sr" for="sort">Sort</label><select id="sort" data-filter="sort">${opt('new', 'Newest', f.sort)}${opt('old', 'Oldest', f.sort)}${opt('priority', 'Priority', f.sort)}${opt('title', 'Title', f.sort)}</select>
+      <button type="button" class="btn" id="filters-toggle" data-a="filters" data-id="x" aria-expanded="${S.filtersOpen}"><span class="ft-wide">Filters</span><span class="ft-phone">Sort &amp; filter</span>${active ? ` (${active})` : ''}</button>
+      <label class="sr" for="sort">Sort</label><select id="sort" data-filter="sort">${opt('new', 'Newest', f.sort)}${opt('old', 'Oldest', f.sort)}${opt('priority', 'Priority', f.sort)}${opt('due', 'Due date', f.sort)}${opt('title', 'Title', f.sort)}</select>
+      <label class="sr" for="group">Group by</label><select id="group" data-filter="group" title="Group by">${Object.entries(L.GROUPS).map(([g, l]) => opt(g, g ? `Group: ${l}` : 'No grouping', f.group)).join('')}</select>
     </div>
-    ${S.filtersOpen ? `<div class="filters">
+    ${S.filtersOpen ? `<div class="sheet-backdrop" data-a="filters" data-id="x" aria-hidden="true"></div><div class="filters" role="group" aria-label="Sort and filter">
+      <div class="sheet-only"><b>Sort and filter</b>${btn('filters', 'done', 'Done', { cls: 'primary' })}</div>
+      <label class="sheet-only" for="sort-m">Sort<select id="sort-m" data-filter="sort">${opt('new', 'Newest', f.sort)}${opt('old', 'Oldest', f.sort)}${opt('priority', 'Priority', f.sort)}${opt('due', 'Due date', f.sort)}${opt('title', 'Title', f.sort)}</select></label>
+      <label class="sheet-only" for="group-m">Group<select id="group-m" data-filter="group">${Object.entries(L.GROUPS).map(([g, l]) => opt(g, l, f.group)).join('')}</select></label>
       <label for="f-producer">From<select id="f-producer" data-filter="producer">${opt('', 'Anyone', f.producer)}${withCur(fc.producers, f.producer).map(([p, n]) => opt(p, `${agentName(p)} (${n})`, f.producer)).join('')}</select></label>
       <label for="f-topic">Topic<select id="f-topic" data-filter="topic">${opt('', 'Any topic', f.topic)}${withCur(fc.topics, f.topic).map(([p, n]) => opt(p, `${p} (${n})`, f.topic)).join('')}</select></label>
       <label for="f-tag">Tag<select id="f-tag" data-filter="tag">${opt('', 'Any tag', f.tag)}${withCur(fc.tags, f.tag).map(([p, n]) => opt(p, `${p} (${n})`, f.tag)).join('')}</select></label>
       <label for="f-claim">Confidence<select id="f-claim" data-filter="claim">${opt('', 'Any', f.claim)}${Object.entries(L.CLAIM).map(([c, l]) => opt(c, l, f.claim)).join('')}</select></label>
       <label for="f-status">My status<select id="f-status" data-filter="status">${opt('', 'Any', f.status)}${Object.entries(L.STATUS).map(([c, l]) => opt(c, l, f.status)).join('')}</select></label>
       <label class="check" for="f-unread"><input type="checkbox" id="f-unread" data-filter="unread" ${f.unread ? 'checked' : ''}> Unread only</label>
+      <label class="check" for="f-new"><input type="checkbox" id="f-new" data-filter="newSince" ${f.newSince ? 'checked' : ''}> New since my last visit</label>
       ${btn('clear-filters', 'x', 'Clear filters')}
     </div>` : ''}
+    <div class="qchips" role="group" aria-label="Quick filters">${[['all', 'All'], ['unread', 'Unread'], ['newSince', 'New'], ['pinned', 'Pinned'], ['due', 'Due']].map(([id, label]) => {
+      const on = id === 'all' ? !f.unread && !f.newSince && !f.pinned && !f.due : !!f[id];
+      return `<button type="button" class="qchip" data-a="qchip" data-id="${id}" aria-pressed="${on}">${label}</button>`;
+    }).join('')}</div>
     <div class="selbar">
       <span>${rows.length} ${rows.length === 1 ? 'item' : 'items'}${f.q || active ? ` of ${all.length}` : ''}</span>
       ${shown.length ? btn('select-all', 'x', allSel ? 'Unselect these' : `Select these ${shown.length}`, { cls: 'link' }) : ''}
       ${S.expanded.size ? btn('collapse', 'x', 'Collapse all', { cls: 'link' }) : ''}
+      <span class="selbar-end">
+        ${unreadN && S.view !== 'notes' ? btn('mark-all-read', 'x', `Mark ${unreadN} read`, { cls: 'link' }) : ''}
+        ${rows.length && S.view !== 'notes' ? btn('triage', 'x', 'Triage one by one', { cls: 'link', extra: 'title="Go through these one at a time (T)"' }) : ''}
+        ${custom ? btn('view-save', 'x', 'Save view…', { cls: 'link' }) : ''}
+      </span>
     </div>
     ${bulkHTML()}
     <div class="list ${S.view === 'notes' ? S.layout : ''}" role="list">${shown.length ? groupedRows(shown) : `<div class="empty" role="listitem"><b>${esc(f.q || active ? 'Nothing matches' : empty[0])}</b>${esc(f.q || active ? 'Try a different search or clear the filters.' : empty[1])}</div>`}</div>
@@ -412,11 +454,17 @@ function noteBody(it) {
     : md(line)).join('');
 }
 function listRows() {
-  const rows = L.rowsFor(S.model, S.view, S.filters, { samples: S.samples }, now);
+  const rows = L.rowsFor(S.model, S.view, effFilters(), { samples: S.samples }, now);
   // A pinned row can move in the ordering, while render() anchors the open row's screen position.
   return rows;
 }
+const groupBy = () => S.filters.group;
+function groupLabel(by, k) { return by === 'producer' ? agentName(k) : by === 'status' ? (L.STATUS[k] || k) : by === 'priority' ? k[0].toUpperCase() + k.slice(1) : k; }
 function groupedRows(rows) {
+  if (S.view !== 'notes' && groupBy()) {
+    const by = groupBy(), total = new Map(L.groupRows(listRows(), by, now).map(g => [g.key, g.rows.length]));
+    return L.groupRows(rows, by, now).map(g => `<h2 class="date-group group-head" role="presentation"><span>${esc(groupLabel(by, g.key))}</span><span class="n">${total.get(g.key) || g.rows.length}</span></h2>${g.rows.map(safeRow).join('')}`).join('');
+  }
   if (S.view !== 'notes') return rows.map(safeRow).join('');
   if (S.layout === 'gallery') { const pinned = rows.filter(r => r.v.pinned), other = rows.filter(r => !r.v.pinned); return (pinned.length ? '<h2 class="date-group" role="presentation">Pinned</h2>' + pinned.map(safeRow).join('') + (other.length ? '<h2 class="date-group" role="presentation">Notes</h2>' : '') : '') + other.map(safeRow).join(''); }
   let prev = '';
@@ -494,17 +542,148 @@ function boardHTML() {
   return `<p class="lead">Move work forward with the status menu on each card. Scroll sideways for all four columns.</p><div class="board">${Object.entries(cols).map(([status, rows]) => `<section class="board-col"><h2>${esc(L.STATUS[status])} <span class="count">${rows.length}</span></h2><div class="list" role="list">${rows.map(safeRow).join('') || '<p class="muted">Nothing here</p>'}</div></section>`).join('')}</div>`;
 }
 function renderMobile() {
-  $('mobile-tabs').innerHTML = [['home','Overview'],['today','Needs you'],['feed','Feed'],['notes','Notes'],['more-menu','More']].map(([id,label]) => btn(id === 'more-menu' ? 'more-menu' : 'view', id, label, { pressed: S.view === id })).join('');
+  const c = S.model ? L.counts(S.model, { samples: S.samples }, now) : {};
+  $('mobile-tabs').innerHTML = [['home','Overview'],['today','Needs you'],['feed','Feed'],['notes','Notes'],['more-menu','More']].map(([id,label]) => {
+    const n = id === 'today' ? c.today : 0, more = id === 'more-menu';
+    const pressed = more ? !['home','today','feed','notes'].includes(S.view) : S.view === id;
+    return btn(more ? 'more-menu' : 'view', id, `${icon(more ? 'more' : id)}<span class="tl">${label}</span>${n ? `<span class="badge" aria-label="${n} waiting">${n > 99 ? '99+' : n}</span>` : ''}`, { pressed, cls: 'tab' });
+  }).join('');
+  setBadge(c.today || 0);
+}
+let lastBadge = -1;
+function setBadge(n) {
+  if (n === lastBadge || typeof navigator === 'undefined') return; lastBadge = n;
+  try { if (n && navigator.setAppBadge) navigator.setAppBadge(n).catch(() => {}); else if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {}); } catch {}
 }
 function renderOverlay() {
   const x = S.menu;
   $('overlay').hidden = !x && !S.editing && !S.unlock && !S.workEditing;
-  $('overlay').innerHTML = S.workEditing ? workEditorHTML() : S.unlock ? unlockHTML() : S.editing ? noteEditorHTML() : !x ? '' : x.type === 'reply'
+  $('overlay').innerHTML = S.workEditing ? workEditorHTML() : S.unlock ? unlockHTML() : S.editing ? noteEditorHTML() : !x ? '' : x.type === 'palette' ? paletteHTML() : x.type === 'triage' ? triageHTML() : x.type === 'saveview' ? saveViewHTML() : x.type === 'reply'
     ? `<section class="modal" role="dialog" aria-modal="true" aria-label="Review reply"><h2>Send to ${esc(agentName(x.to))}?</h2><p class="small">This exact text will be recorded as your reply.</p><pre class="reply-preview">${esc(x.body)}</pre><div class="acts">${btn('confirm-reply','x','Confirm and send',{cls:'primary'})}${btn('cancel-menu','x','Cancel')}</div></section>`
     : x.type === 'actions' ? `<section class="modal" role="dialog" aria-modal="true" aria-label="Item actions"><h2>${esc(itemById(x.id)?.title)}</h2><div class="acts">${['pin','done','snooze','hide'].filter(a => a !== 'hide' || itemById(x.id)?.type === 'story').map(a => btn('menu-'+a,x.id,{pin:'Toggle pin',done:'Toggle done',snooze:'Toggle snooze',hide:'Remove / restore'}[a])).join('')}${btn('cancel-menu','x','Cancel')}</div></section>`
     : `<section class="modal" role="dialog" aria-modal="true" aria-label="More views"><h2>More</h2><div class="more-views">${NAV.filter(n => n && !['home','today','feed','notes'].includes(n[0])).map(([id,label]) => btn('view',id,label)).join('')}</div>${btn('cancel-menu','x','Close')}</section>`;
   document.body.classList.toggle('has-modal', !$('overlay').hidden);
 }
+// ---------- command menu (Ctrl/Cmd+K) ----------
+
+const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+const MOD = MAC ? '⌘' : 'Ctrl';
+let palList = [];
+function paletteCommands() {
+  const c = S.model ? L.counts(S.model, { samples: S.samples }, now) : {};
+  const list = [
+    { label: 'New entry', hint: 'C', group: 'Actions', run: () => onAction('new') },
+    { label: 'New note', group: 'Actions', run: () => { if (S.view !== 'notes') setView('notes'); onAction('new'); } },
+    ...(isList(S.view) ? [{ label: 'Search this view', hint: '/', group: 'Actions', run: () => $('q')?.focus() }] : []),
+    { label: 'Refresh data', group: 'Actions', run: () => reload() },
+    ...(isList(S.view) && S.view !== 'notes' ? [{ label: 'Triage this view one by one', hint: 'T', group: 'Actions', run: () => startTriage() }, { label: 'Mark everything here read', group: 'Actions', run: () => onAction('mark-all-read') }] : []),
+    { label: 'Show what is new since my last visit', group: 'Actions', run: () => onAction('show-new') },
+    ...S.views.map(sv => ({ label: `Open view: ${sv.name}`, group: 'Your views', run: () => onAction('open-view', sv.id) })),
+    { label: S.samples ? 'Hide sample records' : 'Show sample records', group: 'Actions', run: () => { S.samples = !S.samples; store.set('si.samples', S.samples); render(); } },
+    ...(S.expanded.size ? [{ label: 'Collapse all open rows', group: 'Actions', run: () => { S.expanded.clear(); render(); } }] : []),
+    ...NAV.filter(Boolean).map(([id, label]) => ({ label: `Go to ${label}`, group: 'Views', hint: c[id] ? String(c[id]) : '', run: () => setView(id) })),
+  ];
+  return list;
+}
+const TYPE_WORD = { story: 'Feed', goal: 'Goal', idea: 'Idea', message: 'Message' };
+function paletteResults(q) {
+  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const hit = label => words.every(w => label.toLowerCase().includes(w));
+  const score = label => (words.length && label.toLowerCase().startsWith(words[0]) ? 0 : 1);
+  const cmds = paletteCommands().filter(x => hit(x.label)).sort((a, b) => score(a.label) - score(b.label));
+  let items = [];
+  if (S.model && words.join('').length >= 2) {
+    items = S.model.items.filter(i => !i.superseded && !i.hidden && (S.samples || !i.synthetic) && hit(`${i.title} ${i.body.slice(0, 400)}`))
+      .sort((a, b) => score(a.title) - score(b.title) || b.t - a.t).slice(0, 8)
+      .map(i => ({ label: i.title || '(untitled)', group: i.note ? 'Note' : TYPE_WORD[i.type] || 'Item', hint: L.ago(i.at, now), run: () => onAction('goto', i.id) }))
+      .sort((a, b) => a.group.localeCompare(b.group));   // one heading per kind
+  }
+  return [...cmds.slice(0, words.length ? 8 : 40), ...items];
+}
+function paletteListHTML() {
+  const x = S.menu;
+  palList = paletteResults(x.q);
+  if (x.sel >= palList.length) x.sel = Math.max(0, palList.length - 1);
+  if (!palList.length) return '<li class="pal-empty" role="presentation">Nothing matches. Press Esc to close.</li>';
+  let last = '';
+  return palList.map((r, n) => {
+    const head = r.group !== last ? `<li class="pal-group" role="presentation">${esc(r.group)}</li>` : ''; last = r.group;
+    return `${head}<li role="option" id="pal-${n}" aria-selected="${n === x.sel}"><button type="button" class="pal-row" tabindex="-1" data-a="pal-run" data-id="${n}"><span class="t">${esc(r.label)}</span>${r.hint ? `<kbd>${esc(r.hint)}</kbd>` : ''}</button></li>`;
+  }).join('');
+}
+function paletteHTML() {
+  return `<section class="modal palette" role="dialog" aria-modal="true" aria-label="Command menu">
+    <input type="text" id="pal-q" role="combobox" aria-expanded="true" aria-controls="pal-list" aria-autocomplete="list" aria-activedescendant="pal-${S.menu.sel}" value="${esc(S.menu.q)}" placeholder="Type a command, view or title…" autocomplete="off" spellcheck="false">
+    <ul id="pal-list" role="listbox" aria-label="Results">${paletteListHTML()}</ul>
+    <p class="pal-help small"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> run · <kbd>Esc</kbd> close · <kbd>C</kbd> new · <kbd>/</kbd> search · <kbd>J</kbd><kbd>K</kbd> rows · <kbd>X</kbd> select · <kbd>P</kbd> pin · <kbd>E</kbd> done · <kbd>H</kbd> snooze · <kbd>T</kbd> triage</p>
+  </section>`;
+}
+function updatePalette() {
+  const ul = $('pal-list'); if (!ul || S.menu?.type !== 'palette') return;
+  ul.innerHTML = paletteListHTML();
+  $('pal-q')?.setAttribute('aria-activedescendant', `pal-${S.menu.sel}`);
+  $(`pal-${S.menu.sel}`)?.scrollIntoView({ block: 'nearest' });
+}
+try { const pk = document.getElementById('palette-key'); if (pk) pk.textContent = `${MOD} K`; } catch {}
+function openPalette(q = '') {
+  if (S.editing || S.unlock || S.workEditing) return;
+  S.menu = { type: 'palette', q, sel: 0, back: document.activeElement?.id || '' };
+  render(); $('pal-q')?.focus();
+}
+function runPalette(n) {
+  const r = palList[n]; if (!r) return;
+  S.menu = null; render(); r.run();
+}
+
+// ---------- triage: one item at a time ----------
+
+function triageHTML() {
+  const t = S.menu;
+  while (t.i < t.ids.length && !itemById(t.ids[t.i])) t.i++;
+  if (t.i >= t.ids.length) return `<section class="modal triage" role="dialog" aria-modal="true" aria-label="Triage finished"><h2>All clear</h2><p class="lead">You went through ${t.ids.length} ${t.ids.length === 1 ? 'item' : 'items'}: ${t.acted} handled, ${t.ids.length - t.acted} skipped.</p><div class="acts">${btn('cancel-menu', 'x', 'Close', { cls: 'primary' })}</div></section>`;
+  const it = itemById(t.ids[t.i]), v = viewOf(it);
+  const k = (a, label, hint, cls = '') => btn('tri', a, `${label} <kbd>${hint}</kbd>`, { cls });
+  return `<section class="modal triage" role="dialog" aria-modal="true" aria-label="Triage">
+    <div class="tri-top"><span class="small">${t.i + 1} of ${t.ids.length}</span><span class="tri-bar" aria-hidden="true"><span style="width:${Math.round(100 * t.i / t.ids.length)}%"></span></span></div>
+    <h2>${esc(it.title)}</h2>
+    <p class="small">${v.reason ? `<span class="chip need">${esc(v.reason)}</span> ` : ''}${esc(agentName(it.producer))} · ${esc(stamp(it.at))}${it.dueAt ? ` · due ${esc(stamp(it.dueAt))}` : ''}</p>
+    <div class="prose tri-body">${md(String(it.body || '').slice(0, 4000)) || '<p class="muted">No details.</p>'}</div>
+    ${it.nextAction ? `<p class="callout"><b>Suggested next step:</b> ${esc(it.nextAction)}</p>` : ''}
+    <p class="small">Is it done, for later, or something to keep in view?</p>
+    <div class="acts">${k('done', 'Done', 'E', 'primary')}${k('snooze', 'Tomorrow', 'H')}${k('pin', v.pinned ? 'Unpin' : 'Pin', 'P')}${k('read', 'Read, next', 'R')}${k('skip', 'Skip', 'J')}${k('open', 'Open', 'O')}${btn('cancel-menu', 'x', 'Stop')}</div>
+  </section>`;
+}
+function startTriage() {
+  const ids = listRows().map(r => r.item.id);
+  if (!ids.length) return toast('Nothing to go through here.');
+  S.menu = { type: 'triage', ids, i: 0, acted: 0 }; render();
+  return $('overlay').querySelector('[data-a="tri"]')?.focus();
+}
+async function triage(a) {
+  const t = S.menu; if (t?.type !== 'triage') return;
+  const it = itemById(t.ids[t.i]);
+  if (!it) { t.i++; return render(); }
+  if (a === 'open') { S.menu = null; return onAction('goto', it.id); }
+  const v = viewOf(it), P = (f, back) => ({ rec: L.records.pref(it, f), undo: () => L.records.pref(it, back) });
+  const c = a === 'done' ? [P({ status: 'done', read: true }, { status: v.status, read: v.read }), 'Done']
+    : a === 'snooze' ? [P({ snoozed_until: DAY() }, { snoozed_until: v.snoozedUntil }), 'Snoozed until tomorrow morning']
+    : a === 'pin' ? [P({ pinned: !v.pinned }, { pinned: v.pinned }), v.pinned ? 'Unpinned' : 'Pinned']
+    : a === 'read' && !v.read ? [P({ read: true }, { read: false }), 'Marked read'] : null;
+  t.i++; if (c) t.acted++;
+  render(); $('overlay')?.querySelector('[data-a="tri"]')?.focus();
+  if (c) await apply([c[0]], c[1]);
+}
+
+// ---------- saved views (kept on this device) ----------
+
+function saveViewHTML() {
+  const f = S.filters, parts = [TITLES[S.view], f.q && `“${f.q}”`, f.producer && agentName(f.producer), f.topic, f.tag && `#${f.tag}`, f.status && L.STATUS[f.status], f.unread && 'unread', f.newSince && 'new', f.group && `by ${L.GROUPS[f.group].toLowerCase()}`].filter(Boolean);
+  return `<section class="modal" role="dialog" aria-modal="true" aria-label="Save view"><h2>Save this view</h2>
+    <p class="small">${esc(parts.join(' · '))}. It appears under “Your views” and in the command menu, on this device.</p>
+    <label for="sv-name" class="lbl">Name</label><input type="text" id="sv-name" maxlength="40" value="${esc(parts.slice(0, 3).join(' '))}" autocomplete="off">
+    <div class="acts">${btn('view-save-ok', 'x', 'Save', { cls: 'primary' })}${btn('cancel-menu', 'x', 'Cancel')}</div></section>`;
+}
+
 function openItem(id) {
   if (S.expanded.has(id)) { S.expanded.delete(id); if (S.mobileItem === id) closeItem(); else render(); return; }
   S.expanded.add(id);
@@ -529,22 +708,50 @@ function replyRecords(it, to, body, actionId) {
 }
 window.addEventListener('popstate', () => { S.expanded.clear(); S.mobileItem = null; document.body.classList.remove('item-focus'); render(); });
 let gesture = null, holdTimer, suppressRowClickUntil = 0;
+const SWIPE = 85;
+function swipeAction(id, dx) { const it = itemById(id); return dx > 0 ? (it?.note ? 'pin' : 'done') : 'snooze'; }
+const SWIPE_LABEL = { done: 'Done', pin: 'Pin', snooze: 'Tomorrow' };
+function paintSwipe(g, dx) {
+  const el = g.card || document.querySelector(`[data-row="${CSS.escape(g.id)}"]`); if (!el) return;
+  const target = g.card || el.querySelector('.row-main'), d = Math.max(-150, Math.min(150, dx));
+  target.style.transform = d ? `translateX(${d}px)` : '';
+  el.classList.toggle('swiping', !!d);
+  const a = g.card ? (d > 0 ? 'done' : 'snooze') : swipeAction(g.id, d);
+  el.dataset.swipe = d ? `${d > 0 ? 'right' : 'left'}${Math.abs(d) > SWIPE ? ' ready' : ''}` : '';
+  el.dataset.swipeLabel = d ? SWIPE_LABEL[a] : '';
+}
 document.addEventListener('pointerdown', e => {
+  const card = e.target.closest('.triage');
+  if (card && !e.target.closest('button,a,input,textarea,select') && PHONE()) { gesture = { card, x: e.clientX, y: e.clientY }; return; }
   const row = e.target.closest('[data-row]');
   if (!row || e.target.closest('input,textarea,select,a,.detail') || (e.target.closest('button') && !e.target.closest('[data-a="open"]'))) return;
   gesture = { id:row.dataset.row, x:e.clientX, y:e.clientY };
   holdTimer = setTimeout(() => { if (gesture) { S.menu = { type:'actions', id:gesture.id }; gesture = null; suppressRowClickUntil = Date.now()+500; render(); } }, 600);
 });
-document.addEventListener('pointermove', e => { if (gesture && Math.hypot(e.clientX-gesture.x,e.clientY-gesture.y)>12) clearTimeout(holdTimer); });
+document.addEventListener('pointermove', e => {
+  if (!gesture) return;
+  const dx = e.clientX - gesture.x, dy = e.clientY - gesture.y;
+  if (Math.hypot(dx, dy) > 12) clearTimeout(holdTimer);
+  if (gesture.horizontal ?? (Math.abs(dx) > 10 || Math.abs(dy) > 10 ? (gesture.horizontal = Math.abs(dx) > Math.abs(dy) * 1.3) : false)) paintSwipe(gesture, dx);
+});
 document.addEventListener('pointerup', e => {
   clearTimeout(holdTimer); if (!gesture) return;
   const g=gesture; gesture=null; const dx=e.clientX-g.x, dy=e.clientY-g.y;
-  if (Math.abs(dx)>85 && Math.abs(dy)<45) { suppressRowClickUntil = Date.now()+500; if (dx>0) onAction(itemById(g.id)?.note ? 'pin' : 'done', g.id); else { S.menu = { type:'actions', id:g.id }; render(); } }
+  paintSwipe(g, 0);
+  if (!g.horizontal || Math.abs(dx) <= SWIPE) return;
+  suppressRowClickUntil = Date.now()+500;
+  if (g.card) return triage(dx > 0 ? 'done' : 'snooze');
+  onAction(swipeAction(g.id, dx), g.id);
 });
-document.addEventListener('pointercancel', () => { clearTimeout(holdTimer); gesture=null; });
+document.addEventListener('pointercancel', () => { clearTimeout(holdTimer); if (gesture) paintSwipe(gesture, 0); gesture=null; });
 let pullY = null;
-document.addEventListener('touchstart', e => { pullY = window.scrollY <= 0 && !e.target.closest('input,textarea,.modal,.row') ? e.touches[0]?.clientY : null; }, {passive:true});
-document.addEventListener('touchend', e => { if (pullY != null && e.changedTouches[0]?.clientY-pullY>110) reload(); pullY=null; }, {passive:true});
+document.addEventListener('touchstart', e => { pullY = window.scrollY <= 0 && e.target.closest && !e.target.closest('input,textarea,.modal,.row,.filters') ? e.touches[0]?.clientY : null; }, {passive:true});
+function pullPaint(d, text) { const p = $('ptr'); if (!p) return; p.hidden = !d; p.style.setProperty('--pull', `${Math.min(d, 120)}px`); p.textContent = text; }
+document.addEventListener('touchmove', e => { if (pullY == null) return; const d = e.touches[0]?.clientY - pullY; pullPaint(d > 8 ? d : 0, d > 110 ? 'Release to refresh' : 'Pull to refresh'); }, {passive:true});
+document.addEventListener('touchend', e => {
+  const d = pullY == null ? 0 : e.changedTouches[0]?.clientY - pullY; pullY = null;
+  if (d > 110) { pullPaint(110, 'Refreshing…'); reload({ quiet: true }).finally(() => pullPaint(0, '')); } else pullPaint(0, '');
+}, {passive:true});
 
 // ---------- overview ----------
 
@@ -560,6 +767,7 @@ function homeHTML() {
     ${card('Status', `<dl class="facts">
         <dt>Data</dt><dd><span class="chip ${f.level === 'ok' ? 'ok' : 'warn'}">${esc(f.text)}</span></dd>
         <dt>Your changes</dt><dd>${S.pending.length ? `${S.pending.length - bad} pending${bad ? `, ${bad} not accepted or need attention` : ''}` : 'All filed'}</dd>
+        <dt>New since your last visit</dt><dd>${(() => { const n = S.model.items.filter(i => !i.hidden && (S.samples || !i.synthetic) && L.isNewSince(i, viewOf(i), S.since)).length; return n ? btn('show-new', 'x', String(n), { cls: 'link', extra: 'title="Show what is new"' }) : '0'; })()}</dd>
         <dt>Unread stories</dt><dd>${o.unread}</dd>
         <dt>Not yet verified</dt><dd>${o.unverified}</dd>
         ${S.model.skipped.length ? `<dt>Unreadable records</dt><dd>${S.model.skipped.length} skipped</dd>` : ''}
@@ -731,6 +939,7 @@ function settingsHTML() {
       ${S.pending.length ? `<p class="lead">Changes made away from the PC are filed by the PC on its next sync, usually within five minutes.</p><ul class="queue">${S.pending.map(p => { const st = pStatus(p); return `<li><span>${esc(p.record.summary)}${p.error ? `<span class="small"> · ${esc(p.error)}</span>` : ''}</span><span class="chip ${st.level === 'bad' ? 'bad' : st.level === 'warn' ? 'warn' : 'wait'}">${esc(st.label)}</span>${p.workConflict?btn('work-review-conflict',p.record.event_id,'Review my change'):''}${btn('discard', p.record.event_id, p.state === 'sent' ? 'Stop tracking' : 'Discard', { cls: 'link' })}</li>`; }).join('')}</ul><div class="ask-row">${btn('retry', 'x', 'Send again now')}</div><p class="small">“Stop tracking” only removes it from this list. A change already on GitHub will still be filed.</p>` : '<p class="lead">Everything you changed is filed.</p>'}
     </section>
     <section class="panel"><h2>Display</h2>
+      ${S.views.length ? `<p class="lead">Your saved views (this device):</p><ul class="queue">${S.views.map(sv => `<li><span>${esc(sv.name)} <span class="small">· ${esc(TITLES[sv.view] || sv.view)}</span></span>${btn('view-del', sv.id, 'Remove', { cls: 'link' })}</li>`).join('')}</ul>` : ''}
       <label class="check" for="s-samples"><input type="checkbox" id="s-samples" data-a="samples" data-id="x" ${S.samples ? 'checked' : ''}> Show sample records (marked “Sample”)</label>
       ${det('tech', 'Technical details', `<p class="small">Ledger revision ${esc(S.model?.revision || '—')} · ${S.model?.eventCount || 0} records · contract ${esc(S.model?.contract || '—')} · reading through ${esc(door || '—')}${S.model?.skipped.length ? ` · skipped unreadable records: ${esc(S.model.skipped.join(', '))}` : ''}</p>`, 'fold')}
     </section>`;
@@ -808,6 +1017,8 @@ function render() {
 const itemById = id => S.model.items.find(i => i.id === id);
 const viewOf = item => L.view(item, S.model, now);
 function setView(v, { keep = false, workId = '' } = {}) {
+  S.savedView = null;
+  if (v === 'upcoming' && !keep) queueMicrotask(() => { if (S.view === 'upcoming' && !S.filters.group && S.filters.sort === 'new') { S.filters.group = 'due'; S.filters.sort = 'due'; render(); } });
   S.workId=v==='work'?workId:'';
   S.view = v; S.page = 1; S.selected.clear(); S.menu = null; S.mobileItem = null; document.body.classList.remove('item-focus');
   if (!keep) { S.filters = noFilters(); S.filtersOpen = false; }
@@ -815,7 +1026,7 @@ function setView(v, { keep = false, workId = '' } = {}) {
   render(); $('view-title').focus({ preventScroll: true }); window.scrollTo({ top: 0 });
 }
 const parseTags = text => { const seen = new Map(); for (const t of String(text).split(',').map(x => x.trim().slice(0, 80)).filter(Boolean)) if (!seen.has(t.toLowerCase())) seen.set(t.toLowerCase(), t); return [...seen.values()].slice(0, 20); };
-const DAY = () => new Date(Date.now() + 864e5).toISOString();
+const DAY = () => L.snoozeOptions(Date.now()).find(o => o.key === 'tomorrow').at;   // tomorrow morning
 
 /** One change to one item, with what would undo it. */
 function change(action, item) {
@@ -823,7 +1034,7 @@ function change(action, item) {
   switch (action) {
     case 'read': return { ...P({ read: !v.read }, { read: v.read }), text: v.read ? 'Marked unread' : 'Marked read' };
     case 'pin': return { ...P({ pinned: !v.pinned }, { pinned: v.pinned }), text: v.pinned ? 'Unpinned' : 'Pinned' };
-    case 'snooze': return { ...P({ snoozed_until: v.snoozed ? null : DAY() }, { snoozed_until: v.snoozedUntil }), text: v.snoozed ? 'Woken' : 'Snoozed until tomorrow' };
+    case 'snooze': return { ...P({ snoozed_until: v.snoozed ? null : DAY() }, { snoozed_until: v.snoozedUntil }), text: v.snoozed ? 'Woken' : 'Snoozed until tomorrow morning' };
     case 'save': return { rec: L.records.feedFlag(item, item.saved ? 'unsaved' : 'saved'), undo: () => L.records.feedFlag(item, item.saved ? 'saved' : 'unsaved'), text: item.saved ? 'Unsaved' : 'Saved' };
     case 'hide': return { rec: L.records.feedFlag(item, item.hidden ? 'unhidden' : 'hidden'), undo: () => L.records.feedFlag(item, item.hidden ? 'hidden' : 'unhidden'), text: item.hidden ? 'Restored to the Feed' : 'Removed from the Feed' };
   }
@@ -842,7 +1053,18 @@ async function onAction(a, id, el) {
   const m = S.model;
   if (a.startsWith('menu-')) { S.menu = null; a = a.slice(5); if (a === 'hide' && itemById(id)?.type !== 'story') return; }
   switch (a) {
-    case 'view': return setView(id);
+    case 'view': if (id === S.view && !S.mobileItem) return window.scrollTo({ top: 0, behavior: 'smooth' }); return setView(id);
+    case 'qchip': {
+      const f = S.filters;
+      if (id === 'all') Object.assign(f, { unread: false, newSince: false, pinned: false, due: false }); else if (['unread', 'newSince', 'pinned', 'due'].includes(id)) f[id] = !f[id];
+      S.page = 1; S.selected.clear(); return render();
+    }
+    case 'share': {
+      const it = itemById(id); if (!it || !navigator.share) return;
+      const text = [it.kicker, String(it.body || '').replace(/[#*`>]/g, '').slice(0, 1500)].filter(Boolean).join('\n\n');
+      try { await navigator.share({ title: it.title, text }); } catch (e) { if (e?.name !== 'AbortError') toast('Could not open the share sheet.'); }
+      return;
+    }
     case 'open-work': return setView('work',{workId:id});
     case 'work-new': return startWorkEditor();
     case 'work-edit': return startWorkEditor(m.work.find(w=>w.id===id));
@@ -892,6 +1114,33 @@ async function onAction(a, id, el) {
       const r = await send(replyRecords(itemById(x.id), x.to, x.body, x.actionId));
       return toast(said(r, 'Reply sent.', 'Reply queued for the PC.'));
     }
+    case 'palette': return openPalette();
+    case 'triage': return startTriage();
+    case 'tri': return triage(id);
+    case 'mark-all-read': {
+      const rows = listRows().filter(r => !r.v.read);
+      if (!rows.length) return toast('Everything here is already read.');
+      return apply(rows.map(r => change('read', r.item)), `Marked ${rows.length} read`);
+    }
+    case 'show-new': setView('feed'); S.filters.newSince = true; S.filtersOpen = true; return render();
+    case 'snooze-until': {
+      if (!el?.value) return;
+      const it = itemById(id), prev = viewOf(it).snoozedUntil, until = el.value;
+      return apply([{ rec: L.records.pref(it, { snoozed_until: until }), undo: () => L.records.pref(it, { snoozed_until: prev }) }], `Snoozed until ${stamp(until)}`);
+    }
+    case 'view-save': S.menu = { type: 'saveview' }; render(); return $('sv-name')?.select();
+    case 'view-save-ok': {
+      const name = String($('sv-name')?.value || '').trim().slice(0, 40) || TITLES[S.view];
+      const sv = { id: 'v' + Date.now().toString(36), name, view: S.view, filters: { ...S.filters } };
+      S.views = [...S.views.filter(x => x.name !== name), sv]; store.set('si.views', S.views);
+      S.savedView = sv.id; S.menu = null; render(); return toast(`Saved “${name}”.`);
+    }
+    case 'open-view': {
+      const sv = S.views.find(x => x.id === id); if (!sv) return;
+      S.filters = { ...noFilters(), ...sv.filters }; S.filtersOpen = false; setView(sv.view, { keep: true }); S.savedView = sv.id; return render();
+    }
+    case 'view-del': S.views = S.views.filter(x => x.id !== id); store.set('si.views', S.views); if (S.savedView === id) S.savedView = null; render(); return toast('View removed.');
+    case 'pal-run': return runPalette(Number(id));
     case 'item-menu': S.menu = { type: 'actions', id }; render(); return $('overlay').querySelector('button')?.focus();
     case 'cancel-menu': S.menu = null; return render();
     case 'more-menu': S.menu = { type: 'more' }; render(); return $('overlay').querySelector('button')?.focus();
@@ -992,6 +1241,21 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('toggle', e => { const d = e.target; if (d.dataset?.d) (d.open ? S.openDetails.add(d.dataset.d) : S.openDetails.delete(d.dataset.d)); }, true);
 document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (S.menu?.type === 'palette') { const back = S.menu.back; S.menu = null; render(); return back && $(back)?.focus(); }
+    return openPalette();
+  }
+  if (S.menu?.type === 'palette' && !$('overlay').hidden) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const n = palList.length; if (n) S.menu.sel = (S.menu.sel + (e.key === 'ArrowDown' ? 1 : n - 1)) % n; return updatePalette(); }
+    if (e.key === 'Enter') { e.preventDefault(); return runPalette(S.menu.sel); }
+    if (e.key === 'Escape') { e.preventDefault(); const back = S.menu.back; S.menu = null; render(); return (back && $(back)?.focus()) || $('view-title')?.focus(); }
+  }
+  if (S.menu?.type === 'triage' && !$('overlay').hidden && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const a = { e: 'done', h: 'snooze', p: 'pin', r: 'read', j: 'skip', ArrowRight: 'skip', o: 'open' }[e.key];
+    if (a) { e.preventDefault(); return triage(a); }
+  }
+  if (S.menu?.type === 'saveview' && e.key === 'Enter' && e.target.id === 'sv-name') { e.preventDefault(); return onAction('view-save-ok'); }
   if (!$('overlay').hidden) {
     if (e.key === 'Escape') { S.workEditing=null;S.workOriginal=null;S.workPendingId=null;cancelNoteEditor({ renderNow: false }); S.menu = null; S.unlock = null; render(); $('new')?.focus(); return; }
     if (e.key === 'Tab') {
@@ -1008,9 +1272,25 @@ document.addEventListener('keydown', e => {
   if (e.key === '/' && $('q')) { e.preventDefault(); $('q').focus(); }
   else if (e.key === 'j' && rows.length) rows[Math.min(rows.length - 1, i + 1)].focus();
   else if (e.key === 'k' && rows.length) rows[Math.max(0, i - 1)].focus();
+  else if ((e.key === 'c' || e.key === 'C') && !e.shiftKey && S.model) { e.preventDefault(); onAction('new'); }
+  else if (e.key === '?') { e.preventDefault(); openPalette(); }
+  else if ((e.key === 't' || e.key === 'T') && isList(S.view) && S.view !== 'notes') { e.preventDefault(); startTriage(); }
+  else if ((e.key === 'e' || e.key === 'h') && i >= 0) {
+    const id = rows[i].closest('[data-row]')?.dataset.row; if (!id || !itemById(id)) return;
+    e.preventDefault(); onAction(e.key === 'e' ? 'done' : 'snooze', id);
+  }
+  else if ((e.key === 'x' || e.key === 'p') && i >= 0) {
+    const id = rows[i].closest('[data-row]')?.dataset.row; if (!id || !itemById(id)) return;
+    e.preventDefault();
+    if (e.key === 'x') { S.selected.has(id) ? S.selected.delete(id) : S.selected.add(id); render(); }
+    else onAction('pin', id);
+  }
 });
+document.addEventListener('input', e => { if (e.target.id === 'pal-q' && S.menu?.type === 'palette') { S.menu.q = e.target.value; S.menu.sel = 0; updatePalette(); } });
 window.addEventListener('hashchange', () => { const h=location.hash.slice(1),v=h.split('/')[0];let workId='';try{if(v==='work' && h.includes('/'))workId=decodeURIComponent(h.slice(5));}catch{}if(TITLES[v] && (v!==S.view || workId!==S.workId))setView(v,{workId}); });
 window.addEventListener('online', () => reload({ quiet: true }));
+window.addEventListener('pagehide', markVisit);
+document.addEventListener('visibilitychange', () => { if (document.hidden) markVisit(); });
 document.addEventListener('visibilitychange', () => { if (document.hidden && (S.decrypted.size || S.unlock || hasEncryptedDrafts() || S.editing && itemById(S.editing)?.encrypted)) lockNotes(); if (!document.hidden && doors.door !== 'local') reload({ quiet: true }); });
 
 // The clock: refresh the "x min ago" text every minute; redraw only when a snooze ran out.
@@ -1026,5 +1306,6 @@ setInterval(() => {
 
 const h = location.hash.slice(1);
 if (TITLES[h.split('/')[0]]) {S.view=h.split('/')[0];try{if(S.view==='work' && h.includes('/'))S.workId=decodeURIComponent(h.slice(5));}catch{}}
+if (S.view === 'upcoming') Object.assign(S.filters, { group: 'due', sort: 'due' });   // Upcoming opens soonest first, by due section
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('./sw.js').catch(() => {});
 reload().then(() => { snoozedIds = snoozedNow(); });
