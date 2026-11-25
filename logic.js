@@ -431,6 +431,7 @@ export function matches(item, v, f) {
   if (f.status && v.status !== f.status) return false;
   if (f.unread && v.read) return false;
   if (f.pinned && !v.pinned) return false;
+  if (f.reason && v.reason !== f.reason) return false;
   if (f.due && !(item.dueAt && ts(item.dueAt))) return false;
   if (f.newSince && !isNewSince(item, v, f.newSince)) return false;
   if (f.q) {
@@ -615,4 +616,75 @@ export function snoozeOptions(now = Date.now()) {
   out.push({ key: 'nextweek', label: 'Next week', at: at(toMonday === 1 ? 8 : toMonday, 8) });   // on a Sunday, not tomorrow again
   out.push({ key: 'month', label: 'In a month', at: at(30, 8) });
   return out;
+}
+
+// ---------- quick add, calendar, daily review (2026-11-24) ----------
+
+const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+/**
+ * Read a typed line the way a task app's quick add does: "Pay tuition fri #school !high" becomes the
+ * title "Pay tuition", due Friday 9:00, tag school, high priority. "@codex" names an agent.
+ * `agents` = [{id, label}] to match @names against. Unknown words stay in the title.
+ */
+export function parseQuick(text, now = Date.now(), agents = []) {
+  const d = new Date(now), at = (days, h = 9) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, h, 0, 0).toISOString();
+  const out = { title: '', tags: [], priority: '', dueAt: null, to: '', found: [] };
+  let s = ' ' + String(text || '') + ' ';
+  const take = (re, fn) => { s = s.replace(re, (...m) => { const r = fn(...m); return r === false ? m[0] : ' '; }); };
+  take(/\s#([\p{L}\p{N}_-]{1,40})(?=\s)/gu, (_, t) => { out.tags.push(t); out.found.push('#' + t); });
+  take(/\s(!!|!high|!1|!low|!3|!normal|!2)(?=\s)/gi, (_, p) => { p = p.toLowerCase(); out.priority = /!!|high|1/.test(p) ? 'high' : /low|3/.test(p) ? 'low' : 'normal'; out.found.push(out.priority + ' priority'); });
+  take(/\s@([a-z0-9][a-z0-9._-]{1,40})(?=\s)/gi, (m, name) => {
+    const n = name.toLowerCase(), a = agents.find(x => x.id.toLowerCase() === n) || agents.find(x => x.id.toLowerCase().startsWith(n) || String(x.label || '').toLowerCase().startsWith(n));
+    if (!a) return false; out.to = a.id; out.found.push('to ' + (a.label || a.id));
+  });
+  const due = (iso, word) => { if (!out.dueAt) { out.dueAt = iso; out.found.push('due ' + word); return; } return false; };
+  take(/\s(?:due\s+)?(\d{4}-\d{2}-\d{2})(?=\s)/gi, (_, x) => { const t = new Date(x + 'T09:00:00'); return isNaN(t) ? false : due(t.toISOString(), x); });
+  take(/\s(?:due\s+)?(today|tonight)(?=\s)/gi, (_, w) => due(w.toLowerCase() === 'tonight' ? at(0, 20) : at(0, 17), w.toLowerCase()));
+  take(/\s(?:due\s+)?(tomorrow|tmrw)(?=\s)/gi, () => due(at(1), 'tomorrow'));
+  take(/\s(?:due\s+)?next\s+week(?=\s)/gi, () => due(at(((8 - d.getDay()) % 7) || 7), 'next week'));
+  take(/\s(?:due\s+)?in\s+(\d{1,3})\s+days?(?=\s)/gi, (_, n) => due(at(Number(n)), `in ${n} days`));
+  take(/\s(?:due\s+|on\s+)?(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day|nesday|rsday|urday)?(?=\s)/gi, (m, w) => {
+    const i = DAYS.findIndex(x => x.startsWith(w.toLowerCase().slice(0, 3))); if (i < 0) return false;
+    const ahead = ((i - d.getDay() + 7) % 7) || 7; return due(at(ahead), DAYS[i][0].toUpperCase() + DAYS[i].slice(1));
+  });
+  out.title = s.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
+/** A month of due dates for the Calendar: weeks of 7 days (Monday first), each with its items. */
+export function monthGrid(model, year, month, opts = {}, now = Date.now()) {
+  const first = new Date(year, month, 1), start = new Date(year, month, 1 - ((first.getDay() + 6) % 7));
+  const byDay = new Map();
+  for (const item of model.items) {
+    if (!item.dueAt || !ts(item.dueAt) || item.hidden || item.superseded || (item.synthetic && !opts.samples)) continue;
+    const v = view(item, model, now); if (v.status === 'done') continue;
+    const dt = new Date(ts(item.dueAt)), k = `${dt.getFullYear()}-${dt.getMonth()}-${dt.getDate()}`;
+    if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push({ item, v });
+  }
+  const weeks = [];
+  for (let w = 0; w < 6; w++) {
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const dt = new Date(start.getFullYear(), start.getMonth(), start.getDate() + w * 7 + i), k = `${dt.getFullYear()}-${dt.getMonth()}-${dt.getDate()}`;
+      days.push({ date: dt, key: k, inMonth: dt.getMonth() === month, today: startOfDay(dt.getTime()) === startOfDay(now), rows: (byDay.get(k) || []).sort((a, b) => ts(a.item.dueAt) - ts(b.item.dueAt)) });
+    }
+    if (w >= 4 && !days.some(x => x.inMonth)) break;
+    weeks.push(days);
+  }
+  return weeks;
+}
+
+/** The end-of-day picture: what got done, what arrived, what is due, what waits for tomorrow. */
+export function dayReview(model, opts = {}, now = Date.now()) {
+  const sod = startOfDay(now), eod = sod + 864e5;
+  const visible = model.items.filter(i => !i.hidden && !i.superseded && (opts.samples || !i.synthetic));
+  const rows = visible.map(item => ({ item, v: view(item, model, now) }));
+  const pref = i => model.prefs[i.pid || i.id] || {};
+  return {
+    done: rows.filter(r => r.v.status === 'done' && ts(pref(r.item).updated_at) >= sod),
+    arrived: rows.filter(r => r.item.t >= sod && !isOwner(r.item.producer)),
+    dueToday: rows.filter(r => r.item.dueAt && ts(r.item.dueAt) < eod && r.v.status !== 'done'),
+    tomorrow: model.items.filter(i => { const u = ts(pref(i).snoozed_until); return u >= eod && u < eod + 864e5; }),
+    open: rows.filter(r => r.v.needsYou),
+  };
 }

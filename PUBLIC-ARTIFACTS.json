@@ -9,8 +9,8 @@
     },
     {
       "path": "app.js",
-      "bytes": 119472,
-      "sha256": "89e0fbe3c660a473cfaa2af3767e25524cd49f958a7e489e31f98ca1ed685e5b"
+      "bytes": 125239,
+      "sha256": "b7d9fd57c8b4ff2bbc174c4e8b836dc999a6d62c96226e936ca4d5ffdd986713"
     },
     {
       "path": "data.js",
@@ -19,8 +19,8 @@
     },
     {
       "path": "logic.js",
-      "bytes": 45757,
-      "sha256": "5010e99bbbfd2eb6b9d7d20190c42059a1b8f904ed51c5e13ea87d0ba08b9637"
+      "bytes": 50655,
+      "sha256": "175b8c18c1c6ceb26bce928027f33cc7c80065d0dfdd1d8879766673cc2dcb9f"
     },
     {
       "path": "crypto.js",
@@ -29,13 +29,13 @@
     },
     {
       "path": "app.css",
-      "bytes": 36320,
-      "sha256": "3417299c207ec476f73d7c882911565b90940b717b929d1056a442101b0c82c9"
+      "bytes": 38728,
+      "sha256": "040ec82f913d862513dbd5894c48def45439700d839fce08f1ae6daac27845db"
     },
     {
       "path": "sw.js",
       "bytes": 1232,
-      "sha256": "29d4e01f5b24e55e78341c82b81c3a06a28c27e0d8cb60ba71b3c04b46fa8506"
+      "sha256": "f8f3fff03c1da1b34abc024bf91bb47039d5e170cfdd0c6f8e50309487dc32df"
     },
     {
       "path": "manifest.webmanifest",

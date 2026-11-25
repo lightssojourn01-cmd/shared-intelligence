@@ -9,7 +9,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const PAGE = 100;
 const APP_NAME = 'Shared Intelligence'; // Rename the build here.
-const NAV = [['home', 'Overview'], ['work', 'Work'], ['today', 'Needs you'], ['upcoming', 'Upcoming'], ['reports', 'Review'], ['feed', 'Feed'], ['activity', 'Activity'], ['notes', 'Notes'], ['board', 'Board'], ['goals', 'Goals'], ['ideas', 'Ideas'], ['messages', 'Messages'], null,
+const NAV = [['home', 'Overview'], ['work', 'Work'], ['today', 'Needs you'], ['upcoming', 'Upcoming'], ['calendar', 'Calendar'], ['reports', 'Review'], ['feed', 'Feed'], ['activity', 'Activity'], ['notes', 'Notes'], ['board', 'Board'], ['goals', 'Goals'], ['ideas', 'Ideas'], ['messages', 'Messages'], null,
   ['saved', 'Saved'], ['snoozed', 'Snoozed'], ['hidden', 'Hidden'], ['history', 'History'], null, ['agents', 'Agents'], ['projects', 'Projects'], ['resources', 'Resources'], ['settings', 'Settings']];
 const TITLES = Object.fromEntries(NAV.filter(Boolean));
 const isList = v => !!L.VIEWS[v];
@@ -364,7 +364,7 @@ function composeHTML() {
   return `<section class="compose" aria-label="New entry">
     <div class="ask-row"><label for="c-type">New</label><select id="c-type" data-draft="c:type" data-rerender="1">${opt('message', 'Message to an agent', type)}${opt('idea', 'Idea', type)}${opt('note', 'Note', type)}</select>
       ${type === 'message' ? `<label for="c-to">To</label><select id="c-to" data-draft="c:to">${agentOptions(draft('c:to', ''))}</select>` : ''}</div>
-    <label for="c-title" class="lbl">${type === 'message' ? 'Subject' : 'Title'}</label><input type="text" id="c-title" data-draft="c:title" value="${esc(draft('c:title'))}" maxlength="140" autocomplete="off">
+    ${quickHintHTML()}<label for="c-title" class="lbl">${type === 'message' ? 'Subject' : 'Title'}</label><input type="text" id="c-title" data-draft="c:title" value="${esc(draft('c:title'))}" maxlength="140" autocomplete="off">
     <label for="c-body" class="lbl">${type === 'message' ? 'Message' : 'Details (optional)'}</label><textarea id="c-body" data-draft="c:body" rows="3" maxlength="${type === 'message' ? 4000 : 19000}">${esc(draft('c:body'))}</textarea>
     <div class="ask-row">${btn('compose-send', 'x', type === 'message' ? 'Send' : 'Add', { cls: 'primary' })}${btn('compose-close', 'x', 'Cancel')}</div>
   </section>`;
@@ -379,6 +379,21 @@ const EMPTY = {
 };
 const shownRows = () => listRows().slice(0, S.page * PAGE);
 
+function reasonTabsHTML() {
+  const all = L.rowsFor(S.model, 'today', {}, { samples: S.samples }, now), n = r => all.filter(x => x.v.reason === r).length;
+  const tabs = [['all', 'All', all.length], ['Message for you', 'Messages', n('Message for you')], ['You flagged this', 'Flagged', n('You flagged this')], ['Next step suggested', 'Suggested', n('Next step suggested')]];
+  return `<div class="seg" role="tablist" aria-label="Why it needs you">${tabs.map(([id, label, c]) => {
+    const on = id === 'all' ? !S.filters.reason : S.filters.reason === id;
+    return `<button type="button" role="tab" class="seg-b" data-a="reason-tab" data-id="${esc(id)}" aria-selected="${on}">${label}<span class="n">${c}</span></button>`;
+  }).join('')}</div>`;
+}
+function quickParse() { return L.parseQuick(String(draft('c:title')), Date.now(), L.realAgents(S.model)); }
+function quickHintHTML() {
+  if (!S.compose) return '';
+  const p = quickParse(), type = draft('c:type', 'message');
+  const found = p.found.filter(f => type === 'message' ? f.startsWith('to ') : true);
+  return `<p class="small quick-hint" id="quick-hint" aria-live="polite">${found.length ? `Understood: ${esc(found.join(' · '))}` : `Tip: add <b>#tag</b>, <b>!high</b>, <b>fri</b> or <b>tomorrow</b> to the title${type === 'message' ? ', or <b>@agent</b>' : ''}.`}</p>`;
+}
 function bulkHTML() {
   if (!S.selected.size) return '';
   const items = [...S.selected].map(itemById).filter(Boolean), vs = items.map(viewOf);
@@ -423,6 +438,7 @@ function listHTML() {
       <label class="check" for="f-new"><input type="checkbox" id="f-new" data-filter="newSince" ${f.newSince ? 'checked' : ''}> New since my last visit</label>
       ${btn('clear-filters', 'x', 'Clear filters')}
     </div>` : ''}
+    ${S.view === 'today' ? reasonTabsHTML() : ''}
     <div class="qchips" role="group" aria-label="Quick filters">${[['all', 'All'], ['unread', 'Unread'], ['newSince', 'New'], ['pinned', 'Pinned'], ['due', 'Due']].map(([id, label]) => {
       const on = id === 'all' ? !f.unread && !f.newSince && !f.pinned && !f.due : !!f[id];
       return `<button type="button" class="qchip" data-a="qchip" data-id="${id}" aria-pressed="${on}">${label}</button>`;
@@ -684,6 +700,25 @@ function saveViewHTML() {
     <div class="acts">${btn('view-save-ok', 'x', 'Save', { cls: 'primary' })}${btn('cancel-menu', 'x', 'Cancel')}</div></section>`;
 }
 
+// ---------- calendar of due dates ----------
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function calendarHTML() {
+  const base = new Date(now), y = S.calYear ?? base.getFullYear(), m = S.calMonth ?? base.getMonth();
+  const weeks = L.monthGrid(S.model, y, m, { samples: S.samples }, now), sel = S.calDay;
+  const dayRows = sel ? weeks.flat().find(d => d.key === sel)?.rows || [] : [];
+  const cell = d => `<button type="button" class="cal-day${d.inMonth ? '' : ' out'}${d.today ? ' today' : ''}${d.key === sel ? ' sel' : ''}" data-a="cal-day" data-id="${d.key}" aria-label="${esc(d.date.toDateString())}: ${d.rows.length} due" aria-pressed="${d.key === sel}">
+      <span class="cal-n">${d.date.getDate()}</span>
+      ${d.rows.slice(0, 2).map(r => `<span class="cal-item" data-priority="${esc(r.v.priority)}">${esc(r.item.title)}</span>`).join('')}
+      ${d.rows.length > 2 ? `<span class="cal-more">+${d.rows.length - 2}</span>` : ''}
+      ${d.rows.length ? `<span class="cal-dots" aria-hidden="true">${'<i></i>'.repeat(Math.min(d.rows.length, 3))}</span>` : ''}
+    </button>`;
+  return `<div class="cal-head">${btn('cal-move', '-1', '‹ <span class="sr">Previous month</span>')}<h2>${MONTHS[m]} ${y}</h2>${btn('cal-move', '1', '<span class="sr">Next month</span> ›')}${btn('cal-move', '0', 'Today', { cls: 'link' })}</div>
+    <div class="cal" role="grid"><div class="cal-week cal-dow" role="row">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => `<span role="columnheader">${d}</span>`).join('')}</div>
+    ${weeks.map(w => `<div class="cal-week" role="row">${w.map(cell).join('')}</div>`).join('')}</div>
+    ${sel ? `<h2 class="date-group">Due ${esc(weeks.flat().find(d => d.key === sel)?.date.toDateString() || '')}</h2><div class="list" role="list">${dayRows.length ? dayRows.map(safeRow).join('') : '<div class="empty" role="listitem"><b>Nothing due that day</b></div>'}</div>` : '<p class="small">Tap a day to see what is due. Items get a date when an agent gives one, or when you add one with quick add (for example “fri” or “2026-12-01”).</p>'}`;
+}
+
 function openItem(id) {
   if (S.expanded.has(id)) { S.expanded.delete(id); if (S.mobileItem === id) closeItem(); else render(); return; }
   S.expanded.add(id);
@@ -764,6 +799,16 @@ function homeHTML() {
   return `${workHubHTML()}${composeHTML()}<div class="home">
     ${o.brief ? `<section class="card brief"><div class="card-top"><h2>${esc(o.brief.item.title)}</h2><span class="small">${esc(agentName(o.brief.item.producer))} · ${esc(stamp(o.brief.item.at))}</span></div><div class="prose">${md(o.brief.item.body)}</div>${(o.brief.item.actions || []).length ? `<div class="acts">${(o.brief.item.actions || []).map((a, n) => btn('agent-action', `${o.brief.item.id}|${n}`, esc(a.label))).join('')}</div>` : ''}</section>` : ''}
     ${card(`Needs you <span class="count ${o.needs.count ? 'hot' : ''}">${o.needs.count}</span>`, o.needs.count ? `<ul class="links">${o.needs.top.map(link).join('')}</ul>` : '<p class="muted">Nothing is waiting on you.</p>', o.needs.count > o.needs.top.length ? go('today', `All ${o.needs.count}`) : '')}
+    ${(() => {
+      const r = L.dayReview(S.model, { samples: S.samples }, now);
+      return card('Your day', `<dl class="facts">
+        <dt>Done today</dt><dd>${r.done.length}</dd>
+        <dt>Arrived today</dt><dd>${r.arrived.length}</dd>
+        <dt>Due today or overdue</dt><dd>${r.dueToday.length ? btn('view', 'upcoming', String(r.dueToday.length), { cls: 'link' }) : '0'}</dd>
+        <dt>Snoozed until tomorrow</dt><dd>${r.tomorrow.length}</dd>
+        <dt>Still needs you</dt><dd>${r.open.length}</dd>
+      </dl><div class="acts">${r.open.length ? btn('review-triage', 'x', `Go through ${r.open.length} now`, { cls: 'primary' }) : '<span class="small ok-t">Nothing is waiting on you.</span>'}${btn('view', 'calendar', 'Calendar')}</div>`);
+    })()}
     ${card('Status', `<dl class="facts">
         <dt>Data</dt><dd><span class="chip ${f.level === 'ok' ? 'ok' : 'warn'}">${esc(f.text)}</span></dd>
         <dt>Your changes</dt><dd>${S.pending.length ? `${S.pending.length - bad} pending${bad ? `, ${bad} not accepted or need attention` : ''}` : 'All filed'}</dd>
@@ -999,6 +1044,7 @@ function render() {
   else if (S.view === 'resources') main.innerHTML = resourcesHTML();
   else if (S.view === 'activity') main.innerHTML = activityHTML();
   else if (S.view === 'board') main.innerHTML = boardHTML();
+  else if (S.view === 'calendar') main.innerHTML = calendarHTML();
   else if (S.view === 'agents') main.innerHTML = agentsHTML();
   else if (S.view === 'projects') main.innerHTML = projectsHTML();
   else if (S.view === 'settings') main.innerHTML = settingsHTML();
@@ -1115,6 +1161,14 @@ async function onAction(a, id, el) {
       return toast(said(r, 'Reply sent.', 'Reply queued for the PC.'));
     }
     case 'palette': return openPalette();
+    case 'cal-move': {
+      const b = new Date(now); let y = S.calYear ?? b.getFullYear(), m = S.calMonth ?? b.getMonth();
+      if (id === '0') { y = b.getFullYear(); m = b.getMonth(); } else { m += Number(id); if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; } }
+      S.calYear = y; S.calMonth = m; S.calDay = null; return render();
+    }
+    case 'cal-day': S.calDay = S.calDay === id ? null : id; return render();
+    case 'reason-tab': S.filters.reason = id === 'all' ? '' : id; S.page = 1; S.selected.clear(); return render();
+    case 'review-triage': setView('today'); return startTriage();
     case 'triage': return startTriage();
     case 'tri': return triage(id);
     case 'mark-all-read': {
@@ -1192,11 +1246,15 @@ async function onAction(a, id, el) {
     case 'new': if(['work','reports'].includes(S.view))return startWorkEditor();if (S.view === 'notes') { S.editing = 'new'; render(); return $('n-title')?.focus(); } S.compose = !S.compose; if (!isList(S.view) && S.view !== 'home') setView('home'); render(); return S.compose ? $('c-title')?.focus() : $('new').focus();
     case 'compose-close': S.compose = false; render(); return $('new').focus();
     case 'compose-send': {
-      const type = draft('c:type', 'message'), title = String(draft('c:title')).trim(), body = String(draft('c:body')).trim(), to = $('c-to')?.value || '';
+      const type = draft('c:type', 'message'), qp = quickParse(), body = String(draft('c:body')).trim();
+      const title = (type === 'message' ? qp.title.replace(/\s+/g, ' ') : qp.title).trim() || String(draft('c:title')).trim(), to = $('c-to')?.value || qp.to || '';
       if (type === 'message' && !to) { toast('Choose who to send it to.'); return $('c-to')?.focus(); }
       if (!title && !(type === 'message' && body)) { toast(type === 'message' ? 'Write a message first.' : 'Give it a title first.'); return $('c-title')?.focus(); }
       const rec = type === 'message' ? L.records.message({ to, body: body || title, threadTitle: title || body.slice(0, 60) }) : type === 'idea' ? L.records.idea({ title, summary: body }) : L.records.note({ title, body });
-      const r = await send(rec);
+      // what quick add found: a due date on notes, and tags or priority as the owner's own choices
+      if (type === 'note' && qp.dueAt) rec.payload.report_fields = { dueAt: qp.dueAt };
+      const extra = type !== 'message' && (qp.tags.length || qp.priority) ? [L.records.pref({ id: rec.subject_id, pid: rec.subject_id, title }, { ...(qp.tags.length ? { tags: qp.tags } : {}), ...(qp.priority ? { priority: qp.priority } : {}) })] : [];
+      const r = await send(extra.length ? [rec, ...extra] : rec);
       if (!r.ok) return toast(r.message);                       // the form stays open with everything typed
       for (const k of ['c:title', 'c:body']) S.drafts.delete(k);
       S.compose = false;
@@ -1236,6 +1294,7 @@ document.addEventListener('change', e => {
 let searchTimer;
 document.addEventListener('input', e => {
   const el = e.target;
+  if (el.id === 'c-title') { S.drafts.set('c:title', el.value); const h = $('quick-hint'); if (h) h.outerHTML = quickHintHTML(); }
   if (el.dataset.draft && el.tagName !== 'SELECT') S.drafts.set(el.dataset.draft, el.value);
   if (el.dataset.filter === 'q') { S.filters.q = el.value; S.page = 1; S.selected.clear(); clearTimeout(searchTimer); searchTimer = setTimeout(render, 120); }
 });
